@@ -11220,3 +11220,1322 @@ void Canvas::updateCursor()
 EOF
 
 log "PART 13 complete: vanishing laser is a real pen-like stroke (erasable/undoable) that fades away when the pen leaves range"
+
+# ---------------------------------------------------------------------------
+#  PART 14 : Canvas presets & page sizing (Infinite / A4 / A5 / Letter /
+#            Legal / Custom, portrait+landscape). Adds page geometry to the
+#            model, persists it, renders a real paper sheet, and exposes the
+#            presets via a right-click "Page Size" menu on the canvas.
+#            Overwrites Page.h, Serializer.cpp and Canvas.cpp only.
+# ---------------------------------------------------------------------------
+log "PART 14: page sizing presets (infinite / A4 / A5 / Letter / Legal / custom)"
+
+# ---------------------------------------------------------------------------
+#  src/model/Page.h  (overwrite: add infinite / pageWidth / pageHeight)
+# ---------------------------------------------------------------------------
+cat > src/model/Page.h <<'EOF'
+#pragma once
+
+#include <QColor>
+#include <QRectF>
+#include <vector>
+
+#include "model/Layer.h"
+#include "model/Types.h"
+
+namespace ib {
+
+struct Page {
+    BackgroundKind background   = BackgroundKind::Grid;
+    QColor         bgColor      = QColor(255, 255, 255);
+    QColor         gridColor    = QColor(223, 223, 223);
+    double         gridSpacing  = 40.0;
+
+    // Page geometry. infinite == true (default) is the boundless whiteboard.
+    // When false, the page is a fixed sheet of pageWidth x pageHeight (scene
+    // units, ~96 DPI pixels). Defaults describe A4 portrait.
+    bool           infinite     = true;
+    double         pageWidth    = 794.0;
+    double         pageHeight   = 1123.0;
+
+    std::vector<Layer> layers;
+    int            activeLayer  = 0;
+
+    Page() { layers.emplace_back(); }
+
+    Layer &active() {
+        if (layers.empty()) layers.emplace_back();
+        if (activeLayer < 0 || activeLayer >= static_cast<int>(layers.size()))
+            activeLayer = 0;
+        return layers[static_cast<std::size_t>(activeLayer)];
+    }
+
+    // Union of every visible item's bounding rect (empty if the page is blank).
+    QRectF contentBounds() const {
+        QRectF r;
+        for (const auto &layer : layers) {
+            if (!layer.visible) continue;
+            for (const auto &it : layer.items)
+                r = r.isNull() ? it->boundingRect() : r.united(it->boundingRect());
+        }
+        return r;
+    }
+};
+
+} // namespace ib
+EOF
+
+# ---------------------------------------------------------------------------
+#  src/core/Serializer.cpp  (overwrite: persist page geometry, back-compatible)
+# ---------------------------------------------------------------------------
+cat > src/core/Serializer.cpp <<'EOF'
+#include "core/Serializer.h"
+
+#include "model/Document.h"
+#include "model/Item.h"
+
+#include <QFile>
+#include <QSaveFile>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QJsonParseError>
+#include <QColor>
+
+namespace ib {
+namespace io {
+
+static QJsonArray colorToJson(const QColor &c)
+{
+    QJsonArray a;
+    a.append(c.red());
+    a.append(c.green());
+    a.append(c.blue());
+    a.append(c.alpha());
+    return a;
+}
+
+static QColor colorFromJson(const QJsonValue &v, const QColor &def)
+{
+    const QJsonArray a = v.toArray();
+    if (a.size() < 3)
+        return def;
+    const int alpha = a.size() >= 4 ? a.at(3).toInt(255) : 255;
+    return QColor(a.at(0).toInt(), a.at(1).toInt(), a.at(2).toInt(), alpha);
+}
+
+static ItemType typeFromString(const QString &s)
+{
+    if (s == QLatin1String("stroke")) return ItemType::Stroke;
+    if (s == QLatin1String("shape"))  return ItemType::Shape;
+    if (s == QLatin1String("text"))   return ItemType::Text;
+    return ItemType::Image;
+}
+
+static QJsonObject pageToJson(const Page &pg)
+{
+    QJsonObject o;
+    o["background"]  = static_cast<int>(pg.background);
+    o["bgColor"]     = colorToJson(pg.bgColor);
+    o["gridColor"]   = colorToJson(pg.gridColor);
+    o["gridSpacing"] = pg.gridSpacing;
+    o["infinite"]    = pg.infinite;
+    o["pageWidth"]   = pg.pageWidth;
+    o["pageHeight"]  = pg.pageHeight;
+    o["activeLayer"] = pg.activeLayer;
+
+    QJsonArray layers;
+    for (const auto &ly : pg.layers) {
+        QJsonObject lo;
+        lo["name"]    = ly.name;
+        lo["visible"] = ly.visible;
+        lo["locked"]  = ly.locked;
+        lo["opacity"] = ly.opacity;
+
+        QJsonArray items;
+        for (const auto &it : ly.items) {
+            QJsonObject io;
+            it->write(io);
+            items.append(io);
+        }
+        lo["items"] = items;
+        layers.append(lo);
+    }
+    o["layers"] = layers;
+    return o;
+}
+
+static Page pageFromJson(const QJsonObject &o)
+{
+    Page pg;
+    pg.background   = static_cast<BackgroundKind>(
+        o.value("background").toInt(static_cast<int>(BackgroundKind::Grid)));
+    pg.bgColor      = colorFromJson(o.value("bgColor"), QColor(255, 255, 255));
+    pg.gridColor    = colorFromJson(o.value("gridColor"), QColor(223, 223, 223));
+    pg.gridSpacing  = o.value("gridSpacing").toDouble(40.0);
+    pg.infinite     = o.value("infinite").toBool(true);
+    pg.pageWidth    = o.value("pageWidth").toDouble(794.0);
+    pg.pageHeight   = o.value("pageHeight").toDouble(1123.0);
+
+    pg.layers.clear();
+    const QJsonArray layers = o.value("layers").toArray();
+    for (const auto &lv : layers) {
+        const QJsonObject lo = lv.toObject();
+        Layer ly;
+        ly.name    = lo.value("name").toString(QStringLiteral("Layer"));
+        ly.visible = lo.value("visible").toBool(true);
+        ly.locked  = lo.value("locked").toBool(false);
+        ly.opacity = lo.value("opacity").toDouble(1.0);
+
+        const QJsonArray items = lo.value("items").toArray();
+        for (const auto &iv : items) {
+            const QJsonObject io = iv.toObject();
+            ItemPtr item = makeItem(typeFromString(io.value("type").toString()));
+            if (item) {
+                item->read(io);
+                ly.items.push_back(std::move(item));
+            }
+        }
+        pg.layers.push_back(std::move(ly));
+    }
+    if (pg.layers.empty())
+        pg.layers.emplace_back();
+
+    pg.activeLayer = o.value("activeLayer").toInt(0);
+    return pg;
+}
+
+QByteArray toBytes(const Document &doc)
+{
+    QJsonObject root;
+    root["format"]  = "inkboard";
+    root["version"] = 1;
+
+    QJsonArray pages;
+    for (int i = 0; i < doc.pageCount(); ++i)
+        pages.append(pageToJson(doc.page(i)));
+    root["pages"] = pages;
+
+    return QJsonDocument(root).toJson(QJsonDocument::Indented);
+}
+
+bool fromBytes(std::vector<Page> &pagesOut, const QByteArray &bytes, QString *error)
+{
+    QJsonParseError pe;
+    const QJsonDocument doc = QJsonDocument::fromJson(bytes, &pe);
+    if (pe.error != QJsonParseError::NoError) {
+        if (error) *error = pe.errorString();
+        return false;
+    }
+    const QJsonObject root = doc.object();
+    if (root.value("format").toString() != QLatin1String("inkboard")) {
+        if (error) *error = QStringLiteral("Not an InkBoard (.iboard) file.");
+        return false;
+    }
+
+    pagesOut.clear();
+    const QJsonArray pages = root.value("pages").toArray();
+    for (const auto &pv : pages)
+        pagesOut.push_back(pageFromJson(pv.toObject()));
+    if (pagesOut.empty())
+        pagesOut.emplace_back();
+    return true;
+}
+
+bool saveToFile(const Document &doc, const QString &path, QString *error)
+{
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) {
+        if (error) *error = file.errorString();
+        return false;
+    }
+    const QByteArray bytes = toBytes(doc);
+    if (file.write(bytes) != bytes.size()) {
+        if (error) *error = file.errorString();
+        return false;
+    }
+    if (!file.commit()) {
+        if (error) *error = file.errorString();
+        return false;
+    }
+    return true;
+}
+
+bool loadFromFile(Document &doc, const QString &path, QString *error)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (error) *error = file.errorString();
+        return false;
+    }
+    const QByteArray bytes = file.readAll();
+    std::vector<Page> pages;
+    if (!fromBytes(pages, bytes, error))
+        return false;
+
+    doc.setPages(std::move(pages));
+    doc.setFilePath(path);
+    return true;
+}
+
+} // namespace io
+} // namespace ib
+EOF
+
+# ---------------------------------------------------------------------------
+#  src/canvas/Canvas.cpp  (overwrite: paper-sheet rendering + right-click
+#                          "Page Size" menu + fit-to-sheet zoom)
+# ---------------------------------------------------------------------------
+cat > src/canvas/Canvas.cpp <<'EOF'
+#include "canvas/Canvas.h"
+
+#include "core/Commands.h"
+#include "model/TextItem.h"
+#include "model/ImageItem.h"
+
+#include <QApplication>
+#include <QTimer>
+#include <QPainter>
+#include <QPen>
+#include <QRadialGradient>
+#include <QMouseEvent>
+#include <QTabletEvent>
+#include <QWheelEvent>
+#include <QKeyEvent>
+#include <QPointingDevice>
+#include <QInputDialog>
+#include <QMenu>
+#include <QAction>
+#include <QVector>
+#include <QUndoStack>
+#include <QLineF>
+#include <algorithm>
+#include <cmath>
+
+namespace ib {
+
+static const double kPi = 3.14159265358979323846;
+
+static double distToSegment(const QPointF &p, const QPointF &a, const QPointF &b)
+{
+    const QPointF ab = b - a;
+    const double len2 = ab.x() * ab.x() + ab.y() * ab.y();
+    if (len2 <= 1e-9)
+        return std::hypot(p.x() - a.x(), p.y() - a.y());
+    double t = ((p.x() - a.x()) * ab.x() + (p.y() - a.y()) * ab.y()) / len2;
+    t = std::max(0.0, std::min(1.0, t));
+    const QPointF proj(a.x() + t * ab.x(), a.y() + t * ab.y());
+    return std::hypot(p.x() - proj.x(), p.y() - proj.y());
+}
+
+static QPointF constrainShape(const QPointF &a, const QPointF &b, ShapeKind kind)
+{
+    const QPointF d = b - a;
+    if (kind == ShapeKind::Line) {
+        double ang = std::atan2(d.y(), d.x());
+        const double step = kPi / 4.0;
+        ang = std::round(ang / step) * step;
+        const double len = std::hypot(d.x(), d.y());
+        return a + QPointF(std::cos(ang) * len, std::sin(ang) * len);
+    }
+    const double s = std::max(std::abs(d.x()), std::abs(d.y()));
+    return a + QPointF(d.x() < 0 ? -s : s, d.y() < 0 ? -s : s);
+}
+
+// Vanish fade curve: full until 'delay', then linear to 0 over 'dur'.
+static double fadeAlphaFor(qint64 elapsedMs, int delayMs, int durMs)
+{
+    if (elapsedMs <= delayMs)
+        return 1.0;
+    const double t = static_cast<double>(elapsedMs - delayMs) /
+                     static_cast<double>(qMax(1, durMs));
+    if (t >= 1.0)
+        return 0.0;
+    return 1.0 - t;
+}
+
+static bool layerHasEphemeral(const Layer &ly)
+{
+    for (const auto &it : ly.items)
+        if (it->type() == ItemType::Stroke &&
+            static_cast<const StrokeItem *>(it.get())->ephemeral)
+            return true;
+    return false;
+}
+
+Canvas::Canvas(QWidget *parent)
+    : QWidget(parent)
+{
+    setFocusPolicy(Qt::StrongFocus);
+    setMouseTracking(true);
+    setAttribute(Qt::WA_TabletTracking, true);
+    setAutoFillBackground(false);
+    m_translate = QPointF(40, 40);
+
+    // Tablet proximity events are delivered to the application object, so we
+    // watch them via an app-level filter to drive laser vanishing mode.
+    qApp->installEventFilter(this);
+
+    m_fadeTimer = new QTimer(this);
+    m_fadeTimer->setInterval(16);
+    connect(m_fadeTimer, &QTimer::timeout, this, &Canvas::onFadeTick);
+
+    updateCursor();
+}
+
+void Canvas::setDocument(Document *doc)
+{
+    if (m_doc == doc)
+        return;
+    if (m_doc) {
+        m_doc->disconnect(this);
+        if (m_doc->undoStack())
+            m_doc->undoStack()->disconnect(this);
+    }
+    m_doc = doc;
+    stopVanish();
+    cancelActive();
+    m_selection.clear();
+
+    if (m_doc) {
+        connect(m_doc, &Document::currentPageChanged, this, [this](int) {
+            stopVanish(); cancelActive(); m_selection.clear(); update();
+        });
+        connect(m_doc, &Document::pagesChanged, this, [this]() {
+            stopVanish(); cancelActive(); m_selection.clear(); update();
+        });
+        connect(m_doc, &Document::contentChanged, this, [this]() { update(); });
+        if (m_doc->undoStack()) {
+            connect(m_doc->undoStack(), &QUndoStack::indexChanged, this, [this](int) {
+                m_selection.clear(); cancelActive(); update();
+            });
+        }
+    }
+    update();
+}
+
+void Canvas::setTool(ToolId t)
+{
+    cancelActive();
+    m_settings.tool = t;
+    updateCursor();
+    emit toolChanged(t);
+    update();
+}
+
+void Canvas::clearLaser()
+{
+    // Laser ink is now real strokes; Esc only cancels a pending vanish fade.
+    stopVanish();
+    update();
+}
+
+// ---- laser vanishing -------------------------------------------------------
+void Canvas::startVanish()
+{
+    if (!m_doc || !layerHasEphemeral(m_doc->current().active()))
+        return;
+    m_fading = true;
+    m_fadeClock.restart();
+    if (!m_fadeTimer->isActive())
+        m_fadeTimer->start();
+    update();
+}
+
+void Canvas::stopVanish()
+{
+    if (!m_fading)
+        return;
+    m_fading = false;
+    if (m_fadeTimer->isActive())
+        m_fadeTimer->stop();
+    update();
+}
+
+void Canvas::onFadeTick()
+{
+    if (!m_fading || !m_doc) {
+        m_fading = false;
+        m_fadeTimer->stop();
+        return;
+    }
+    const qint64 el = m_fadeClock.elapsed();
+    const int delay = qMax(0, m_settings.laser.vanishDelayMs);
+    const int dur   = qMax(1, m_settings.laser.fadeDurationMs);
+
+    if (el < static_cast<qint64>(delay) + dur) {
+        update();               // still fading; paintEvent computes the alpha
+        return;
+    }
+
+    // Fade complete: remove the ephemeral (vanishing) strokes for real, through
+    // the undo system so nothing dangles and it stays consistent with the pen.
+    m_fading = false;
+    m_fadeTimer->stop();
+
+    Layer &ly = m_doc->current().active();
+    std::vector<Item *> targets;
+    for (auto &it : ly.items)
+        if (it->type() == ItemType::Stroke &&
+            static_cast<StrokeItem *>(it.get())->ephemeral)
+            targets.push_back(it.get());
+
+    if (!targets.empty())
+        m_doc->undoStack()->push(new RemoveItemsCommand(
+            m_doc, m_doc->currentIndex(), m_doc->current().activeLayer,
+            std::move(targets), QStringLiteral("Laser vanish")));
+    update();
+}
+
+bool Canvas::eventFilter(QObject *obj, QEvent *ev)
+{
+    if (ev->type() == QEvent::TabletLeaveProximity) {
+        if (m_settings.tool == ToolId::Laser && m_settings.laser.vanishMode && !m_drawing)
+            startVanish();                 // no-op if there is no ephemeral ink
+    } else if (ev->type() == QEvent::TabletEnterProximity) {
+        stopVanish();                      // no-op if not currently fading
+    }
+    return QWidget::eventFilter(obj, ev);
+}
+
+// ---- view ------------------------------------------------------------------
+void Canvas::zoomAround(const QPointF &widgetPos, double factor)
+{
+    const QPointF before = widgetToScene(widgetPos);
+    m_scale = qBound(0.05, m_scale * factor, 40.0);
+    m_translate = widgetPos - before * m_scale;
+    update();
+    emit viewChanged();
+}
+
+void Canvas::zoomIn()  { zoomAround(QPointF(width() / 2.0, height() / 2.0), 1.2); }
+void Canvas::zoomOut() { zoomAround(QPointF(width() / 2.0, height() / 2.0), 1.0 / 1.2); }
+
+void Canvas::resetView()
+{
+    m_scale = 1.0;
+    m_translate = QPointF(40, 40);
+    update();
+    emit viewChanged();
+}
+
+void Canvas::zoomToFit()
+{
+    if (!m_doc) { update(); return; }
+    Page &pg = m_doc->current();
+    QRectF b;
+    if (!pg.infinite)
+        b = QRectF(0.0, 0.0, qMax(1.0, pg.pageWidth), qMax(1.0, pg.pageHeight));
+    else
+        b = pg.contentBounds();
+    if (b.isNull()) { resetView(); return; }
+    b.adjust(-40, -40, 40, 40);
+    const double sx = width()  / b.width();
+    const double sy = height() / b.height();
+    m_scale = qBound(0.05, qMin(sx, sy), 40.0);
+    m_translate = QPointF(width() / 2.0, height() / 2.0) - b.center() * m_scale;
+    update();
+    emit viewChanged();
+}
+
+// ---- painting --------------------------------------------------------------
+void Canvas::drawBackground(QPainter &p, const Page &pg, const QRectF &area)
+{
+    if (pg.background == BackgroundKind::Blank)
+        return;
+    const double s = qMax(4.0, pg.gridSpacing);
+    QPen pen(pg.gridColor);
+    pen.setCosmetic(true);
+    pen.setWidth(1);
+    p.setPen(pen);
+
+    const double startX = std::floor(area.left() / s) * s;
+    const double startY = std::floor(area.top() / s) * s;
+
+    if (pg.background == BackgroundKind::Grid) {
+        for (double x = startX; x <= area.right(); x += s)
+            p.drawLine(QPointF(x, area.top()), QPointF(x, area.bottom()));
+        for (double y = startY; y <= area.bottom(); y += s)
+            p.drawLine(QPointF(area.left(), y), QPointF(area.right(), y));
+    } else if (pg.background == BackgroundKind::Lines) {
+        for (double y = startY; y <= area.bottom(); y += s)
+            p.drawLine(QPointF(area.left(), y), QPointF(area.right(), y));
+    } else {
+        p.setPen(Qt::NoPen);
+        p.setBrush(pg.gridColor);
+        for (double x = startX; x <= area.right(); x += s)
+            for (double y = startY; y <= area.bottom(); y += s)
+                p.drawEllipse(QPointF(x, y), 1.3, 1.3);
+    }
+}
+
+void Canvas::drawSelection(QPainter &p)
+{
+    if (m_selection.empty())
+        return;
+    QPen pen(QColor(60, 120, 220));
+    pen.setCosmetic(true);
+    pen.setStyle(Qt::DashLine);
+    pen.setWidth(1);
+    p.setPen(pen);
+    p.setBrush(Qt::NoBrush);
+    for (Item *it : m_selection)
+        p.drawRect(it->boundingRect());
+}
+
+void Canvas::drawBrushPreview(QPainter &p)
+{
+    if (!m_hoverValid || m_panning)
+        return;
+
+    if (m_settings.tool == ToolId::Eraser) {
+        const double r = m_settings.eraserRadius * m_scale;
+        QPen pen(QColor(70, 70, 70));
+        pen.setStyle(Qt::DashLine);
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        p.drawEllipse(m_cursorWidget, r, r);
+        return;
+    }
+
+    QColor col;
+    double w = 0.0;
+    bool laser = false;
+    switch (m_settings.tool) {
+    case ToolId::Pen:         col = m_settings.penColor;   w = m_settings.penWidth;   break;
+    case ToolId::Highlighter: col = m_settings.hlColor;    w = m_settings.hlWidth;    break;
+    case ToolId::Line:
+    case ToolId::Rectangle:
+    case ToolId::Ellipse:     col = m_settings.shapeColor; w = m_settings.shapeWidth; break;
+    case ToolId::Laser:       col = m_settings.laser.coreColor; w = m_settings.laser.width; laser = true; break;
+    default: return;
+    }
+
+    const double r = qMax(1.5, w * 0.5 * m_scale);
+
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    if (laser && m_settings.laser.glowEnabled) {
+        const double gr = r + m_settings.laser.glowRadius * m_scale;
+        QRadialGradient g(m_cursorWidget, gr);
+        QColor g0 = m_settings.laser.glowColor; g0.setAlphaF(0.55 * m_settings.laser.intensity);
+        QColor g1 = m_settings.laser.glowColor; g1.setAlphaF(0.0);
+        g.setColorAt(0.0, g0);
+        g.setColorAt(1.0, g1);
+        p.setPen(Qt::NoPen);
+        p.setBrush(g);
+        p.drawEllipse(m_cursorWidget, gr, gr);
+    }
+
+    QColor fill = col;
+    fill.setAlphaF(laser ? m_settings.laser.intensity : 0.9);
+    const QColor outline = (col.lightness() > 128) ? QColor(0, 0, 0, 170)
+                                                   : QColor(255, 255, 255, 190);
+    QPen pen(outline);
+    pen.setWidthF(1.0);
+    p.setPen(pen);
+    p.setBrush(fill);
+    p.drawEllipse(m_cursorWidget, r, r);
+    p.restore();
+}
+
+void Canvas::paintEvent(QPaintEvent *)
+{
+    QPainter p(this);
+    p.fillRect(rect(), QColor(90, 93, 99));
+    if (!m_doc)
+        return;
+
+    p.save();
+    p.translate(m_translate);
+    p.scale(m_scale, m_scale);
+
+    Page &pg = m_doc->current();
+
+    if (pg.infinite) {
+        const QRectF sceneRect =
+            QRectF(widgetToScene(QPointF(0, 0)),
+                   widgetToScene(QPointF(width(), height()))).normalized();
+        p.fillRect(sceneRect, pg.bgColor);
+        drawBackground(p, pg, sceneRect);
+    } else {
+        const QRectF sheet(0.0, 0.0,
+                           qMax(1.0, pg.pageWidth), qMax(1.0, pg.pageHeight));
+        // Soft drop shadow behind the sheet.
+        p.save();
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(0, 0, 0, 55));
+        p.drawRoundedRect(sheet.translated(6.0, 7.0), 2.0, 2.0);
+        p.restore();
+        // Paper.
+        p.fillRect(sheet, pg.bgColor);
+        // Background pattern, clipped to the sheet.
+        p.save();
+        p.setClipRect(sheet);
+        drawBackground(p, pg, sheet);
+        p.restore();
+        // Crisp 1px border.
+        p.save();
+        QPen border(QColor(0, 0, 0, 45));
+        border.setCosmetic(true);
+        border.setWidth(1);
+        p.setPen(border);
+        p.setBrush(Qt::NoBrush);
+        p.drawRect(sheet);
+        p.restore();
+    }
+
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setRenderHint(QPainter::TextAntialiasing, true);
+
+    // Vanish fade multiplier, applied only to ephemeral (vanishing) laser ink.
+    const double vanishFade = m_fading
+        ? fadeAlphaFor(m_fadeClock.elapsed(),
+                       qMax(0, m_settings.laser.vanishDelayMs),
+                       qMax(1, m_settings.laser.fadeDurationMs))
+        : 1.0;
+
+    for (const auto &ly : pg.layers) {
+        if (!ly.visible)
+            continue;
+        const double layerOpacity = ly.opacity < 1.0 ? ly.opacity : 1.0;
+        for (const auto &it : ly.items) {
+            double o = layerOpacity;
+            if (vanishFade < 1.0 && it->type() == ItemType::Stroke &&
+                static_cast<const StrokeItem *>(it.get())->ephemeral)
+                o *= vanishFade;
+            p.save();
+            p.setOpacity(o);
+            it->paint(p);
+            p.restore();
+        }
+    }
+
+    if (m_activeStroke) m_activeStroke->paint(p);
+    if (m_activeShape)  m_activeShape->paint(p);
+
+    drawSelection(p);
+
+    if (m_rubber) {
+        QPen pen(QColor(60, 120, 220));
+        pen.setCosmetic(true);
+        pen.setStyle(Qt::DashLine);
+        p.setPen(pen);
+        p.setBrush(QColor(60, 120, 220, 40));
+        p.drawRect(m_rubberRect);
+    }
+
+    p.restore();
+
+    drawBrushPreview(p);
+}
+
+// ---- input -----------------------------------------------------------------
+void Canvas::mousePressEvent(QMouseEvent *e)
+{
+    m_cursorWidget = e->position();
+    m_hoverValid = true;
+
+    // Right-click: canvas page-size presets (infinite / A4 / A5 / Letter /
+    // Legal / custom). Modal, so the page reference stays valid during exec.
+    if (e->button() == Qt::RightButton && m_doc) {
+        Page &pg = m_doc->current();
+        QMenu menu(this);
+        QMenu *sizeMenu = menu.addMenu(tr("Page Size"));
+
+        struct Preset { QString label; bool inf; double w; double h; };
+        const QVector<Preset> presets = {
+            { tr("Infinite Canvas"),    true,  0.0,    0.0    },
+            { tr("A4 — Portrait"),      false, 794.0,  1123.0 },
+            { tr("A4 — Landscape"),     false, 1123.0, 794.0  },
+            { tr("A5 — Portrait"),      false, 559.0,  794.0  },
+            { tr("A5 — Landscape"),     false, 794.0,  559.0  },
+            { tr("Letter — Portrait"),  false, 816.0,  1056.0 },
+            { tr("Letter — Landscape"), false, 1056.0, 816.0  },
+            { tr("Legal — Portrait"),   false, 816.0,  1344.0 },
+            { tr("Legal — Landscape"),  false, 1344.0, 816.0  },
+        };
+        for (int i = 0; i < presets.size(); ++i) {
+            const Preset &pr = presets[i];
+            QAction *a = sizeMenu->addAction(pr.label);
+            a->setCheckable(true);
+            a->setChecked(pr.inf
+                ? pg.infinite
+                : (!pg.infinite && qAbs(pg.pageWidth - pr.w) < 0.5 &&
+                   qAbs(pg.pageHeight - pr.h) < 0.5));
+            a->setData(i);
+            if (i == 0)
+                sizeMenu->addSeparator();
+        }
+        sizeMenu->addSeparator();
+        QAction *customAct = sizeMenu->addAction(tr("Custom…"));
+
+        QAction *chosen = menu.exec(e->globalPosition().toPoint());
+        if (!chosen)
+            return;
+
+        if (chosen == customAct) {
+            bool ok1 = false, ok2 = false;
+            const int w = QInputDialog::getInt(
+                this, tr("Custom Page Size"), tr("Width (px):"),
+                qRound(pg.infinite ? 794.0 : pg.pageWidth), 50, 20000, 10, &ok1);
+            if (!ok1)
+                return;
+            const int h = QInputDialog::getInt(
+                this, tr("Custom Page Size"), tr("Height (px):"),
+                qRound(pg.infinite ? 1123.0 : pg.pageHeight), 50, 20000, 10, &ok2);
+            if (!ok2)
+                return;
+            pg.infinite   = false;
+            pg.pageWidth  = static_cast<double>(w);
+            pg.pageHeight = static_cast<double>(h);
+            m_doc->markChanged();
+            zoomToFit();
+            update();
+            return;
+        }
+
+        const int idx = chosen->data().toInt();
+        if (idx >= 0 && idx < presets.size()) {
+            const Preset &pr = presets[idx];
+            pg.infinite = pr.inf;
+            if (!pr.inf) {
+                pg.pageWidth  = pr.w;
+                pg.pageHeight = pr.h;
+            }
+            m_doc->markChanged();
+            zoomToFit();
+            update();
+        }
+        return;
+    }
+
+    if (e->button() == Qt::MiddleButton ||
+        (m_spaceDown && e->button() == Qt::LeftButton)) {
+        m_panning = true;
+        m_lastPanPos = e->position().toPoint();
+        setCursor(Qt::ClosedHandCursor);
+        return;
+    }
+    if (e->button() == Qt::LeftButton)
+        handlePointer(Action::Press, e->position(), 1.0, e->modifiers(), false);
+}
+
+void Canvas::mouseMoveEvent(QMouseEvent *e)
+{
+    m_cursorWidget = e->position();
+    m_hoverValid = true;
+    if (m_panning) {
+        const QPoint d = e->position().toPoint() - m_lastPanPos;
+        m_lastPanPos = e->position().toPoint();
+        m_translate += QPointF(d);
+        update();
+        emit viewChanged();
+        return;
+    }
+    handlePointer(Action::Move, e->position(), 1.0, e->modifiers(), false);
+    update();
+    emit cursorMoved(widgetToScene(e->position()));
+}
+
+void Canvas::mouseReleaseEvent(QMouseEvent *e)
+{
+    m_cursorWidget = e->position();
+    if (m_panning &&
+        (e->button() == Qt::MiddleButton || e->button() == Qt::LeftButton)) {
+        m_panning = false;
+        updateCursor();
+        return;
+    }
+    if (e->button() == Qt::LeftButton)
+        handlePointer(Action::Release, e->position(), 1.0, e->modifiers(), false);
+}
+
+void Canvas::tabletEvent(QTabletEvent *e)
+{
+    const bool eraserTip =
+        e->pointerType() == QPointingDevice::PointerType::Eraser;
+    double pr = e->pressure();
+    if (pr <= 0.0)
+        pr = 1.0;
+    m_cursorWidget = e->position();
+    m_hoverValid = true;
+
+    switch (e->type()) {
+    case QEvent::TabletPress:
+        handlePointer(Action::Press, e->position(), pr, e->modifiers(), eraserTip);
+        break;
+    case QEvent::TabletMove:
+        handlePointer(Action::Move, e->position(), pr, e->modifiers(), eraserTip);
+        emit cursorMoved(widgetToScene(e->position()));
+        update();
+        break;
+    case QEvent::TabletRelease:
+        handlePointer(Action::Release, e->position(), pr, e->modifiers(), eraserTip);
+        break;
+    default:
+        break;
+    }
+    e->accept();
+}
+
+void Canvas::wheelEvent(QWheelEvent *e)
+{
+    const double factor = std::pow(1.0015, e->angleDelta().y());
+    zoomAround(e->position(), factor);
+    e->accept();
+}
+
+void Canvas::keyPressEvent(QKeyEvent *e)
+{
+    if (e->key() == Qt::Key_Space) {
+        m_spaceDown = true;
+        setCursor(Qt::OpenHandCursor);
+        e->accept();
+        return;
+    }
+    if (e->key() == Qt::Key_Delete || e->key() == Qt::Key_Backspace) {
+        deleteSelection();
+        e->accept();
+        return;
+    }
+    if (e->key() == Qt::Key_Escape) {
+        cancelActive();
+        clearSelection();
+        clearLaser();
+        e->accept();
+        return;
+    }
+    QWidget::keyPressEvent(e);
+}
+
+void Canvas::keyReleaseEvent(QKeyEvent *e)
+{
+    if (e->key() == Qt::Key_Space) {
+        m_spaceDown = false;
+        updateCursor();
+        e->accept();
+        return;
+    }
+    QWidget::keyReleaseEvent(e);
+}
+
+void Canvas::leaveEvent(QEvent *e)
+{
+    m_hoverValid = false;
+    update();
+    QWidget::leaveEvent(e);
+}
+
+// ---- pointer dispatch ------------------------------------------------------
+void Canvas::handlePointer(Action a, const QPointF &widgetPos, double pressure,
+                           Qt::KeyboardModifiers mods, bool eraserTip)
+{
+    if (!m_doc)
+        return;
+    const QPointF sp = widgetToScene(widgetPos);
+    m_cursorWidget = widgetPos;
+
+    const ToolId t = eraserTip ? ToolId::Eraser : m_settings.tool;
+
+    if (t == ToolId::Laser) {
+        // In BOTH modes the laser is a real glow stroke on the active layer, so
+        // it can be erased, undone, selected and saved exactly like the pen.
+        // Vanishing mode only tags it 'ephemeral' so it fades + removes itself
+        // when the pen later leaves the tablet's range.
+        Layer &lly = m_doc->current().active();
+        if (lly.locked)
+            return;
+        if (a == Action::Press) {
+            stopVanish();                 // a new stroke cancels any pending fade
+            m_drawing = true;
+            m_activeStroke = std::make_unique<StrokeItem>();
+            m_activeStroke->highlighter   = false;
+            m_activeStroke->pressureWidth = false;
+            m_activeStroke->color         = m_settings.laser.coreColor;
+            m_activeStroke->baseWidth     = m_settings.laser.width;
+            m_activeStroke->opacity       = qBound(0.0, m_settings.laser.intensity, 1.0);
+            m_activeStroke->glow          = m_settings.laser.glowEnabled;
+            m_activeStroke->glowColor     = m_settings.laser.glowColor;
+            m_activeStroke->glowRadius    = m_settings.laser.glowRadius;
+            m_activeStroke->ephemeral     = m_settings.laser.vanishMode;
+            m_activeStroke->addPoint(StrokePoint(sp.x(), sp.y(), pressure));
+            update();
+        } else if (a == Action::Move && m_drawing && m_activeStroke) {
+            m_activeStroke->addPoint(StrokePoint(sp.x(), sp.y(), pressure));
+            update();
+        } else if (a == Action::Release && m_drawing) {
+            if (m_activeStroke && !m_activeStroke->isEmpty())
+                commitAdd(std::move(m_activeStroke), QStringLiteral("Laser"));
+            m_activeStroke.reset();
+            m_drawing = false;
+            update();
+        }
+        return;
+    }
+
+    Layer &ly = m_doc->current().active();
+    if (ly.locked)
+        return;
+
+    switch (t) {
+    case ToolId::Pen:
+    case ToolId::Highlighter: {
+        const bool hl = (t == ToolId::Highlighter);
+        if (a == Action::Press) {
+            m_drawing = true;
+            m_activeStroke = std::make_unique<StrokeItem>();
+            m_activeStroke->highlighter   = hl;
+            m_activeStroke->color         = hl ? m_settings.hlColor : m_settings.penColor;
+            m_activeStroke->baseWidth     = hl ? m_settings.hlWidth : m_settings.penWidth;
+            m_activeStroke->opacity       = hl ? m_settings.hlOpacity : 1.0;
+            m_activeStroke->pressureWidth = hl ? false : m_settings.penPressure;
+            m_activeStroke->addPoint(StrokePoint(sp.x(), sp.y(), pressure));
+            update();
+        } else if (a == Action::Move && m_drawing && m_activeStroke) {
+            m_activeStroke->addPoint(StrokePoint(sp.x(), sp.y(), pressure));
+            update();
+        } else if (a == Action::Release && m_drawing) {
+            if (m_activeStroke && !m_activeStroke->isEmpty())
+                commitAdd(std::move(m_activeStroke),
+                          hl ? QStringLiteral("Highlight") : QStringLiteral("Draw"));
+            m_activeStroke.reset();
+            m_drawing = false;
+            update();
+        }
+        break;
+    }
+    case ToolId::Eraser: {
+        if (a == Action::Press) { m_erasing = true; m_eraseStash.clear(); eraseAt(sp); update(); }
+        else if (a == Action::Move && m_erasing) { eraseAt(sp); update(); }
+        else if (a == Action::Release && m_erasing) { finishErase(); m_erasing = false; update(); }
+        break;
+    }
+    case ToolId::Line:
+    case ToolId::Rectangle:
+    case ToolId::Ellipse: {
+        if (a == Action::Press) {
+            m_activeShape = std::make_unique<ShapeItem>();
+            m_activeShape->kind = (t == ToolId::Line) ? ShapeKind::Line
+                                : (t == ToolId::Rectangle) ? ShapeKind::Rectangle
+                                : ShapeKind::Ellipse;
+            m_activeShape->color  = m_settings.shapeColor;
+            m_activeShape->width  = m_settings.shapeWidth;
+            m_activeShape->filled = m_settings.shapeFilled;
+            m_activeShape->fill   = m_settings.shapeFill;
+            m_activeShape->p1 = sp;
+            m_activeShape->p2 = sp;
+            m_drawing = true;
+            update();
+        } else if (a == Action::Move && m_drawing && m_activeShape) {
+            m_activeShape->p2 = (mods & Qt::ShiftModifier)
+                ? constrainShape(m_activeShape->p1, sp, m_activeShape->kind)
+                : sp;
+            update();
+        } else if (a == Action::Release && m_drawing) {
+            if (m_activeShape) {
+                const QLineF diag(m_activeShape->p1, m_activeShape->p2);
+                if (diag.length() >= 2.0)
+                    commitAdd(std::move(m_activeShape), QStringLiteral("Shape"));
+            }
+            m_activeShape.reset();
+            m_drawing = false;
+            update();
+        }
+        break;
+    }
+    case ToolId::Text: {
+        if (a == Action::Press)
+            addTextAt(sp);
+        break;
+    }
+    case ToolId::Select: {
+        handleSelect(a, sp, mods);
+        break;
+    }
+    case ToolId::Laser:
+        break;
+    }
+}
+
+// ---- selection -------------------------------------------------------------
+void Canvas::handleSelect(Action a, const QPointF &sp, Qt::KeyboardModifiers mods)
+{
+    if (a == Action::Press) {
+        Item *hit = topItemAt(sp);
+        if (hit) {
+            const bool already =
+                std::find(m_selection.begin(), m_selection.end(), hit) != m_selection.end();
+            if (mods & Qt::ShiftModifier) {
+                if (already) removeFromSelection(hit);
+                else addToSelection(hit);
+            } else if (!already) {
+                setSelectionSingle(hit);
+            }
+            m_movingSelection = true;
+            m_moveStartScene = sp;
+            m_moveAccum = QPointF(0, 0);
+        } else {
+            if (!(mods & Qt::ShiftModifier))
+                clearSelection();
+            m_rubber = true;
+            m_rubberStartScene = sp;
+            m_rubberRect = QRectF(sp, sp);
+        }
+        update();
+    } else if (a == Action::Move) {
+        if (m_movingSelection && !m_selection.empty()) {
+            const QPointF d = sp - m_moveStartScene;
+            const QPointF step = d - m_moveAccum;
+            for (Item *it : m_selection)
+                it->translate(step);
+            m_moveAccum = d;
+            update();
+        } else if (m_rubber) {
+            m_rubberRect = QRectF(m_rubberStartScene, sp).normalized();
+            update();
+        }
+    } else if (a == Action::Release) {
+        if (m_movingSelection) {
+            m_movingSelection = false;
+            if (!m_selection.empty() &&
+                (std::abs(m_moveAccum.x()) > 0.01 || std::abs(m_moveAccum.y()) > 0.01)) {
+                // Roll back the live translation, then re-apply it as one undoable command.
+                for (Item *it : m_selection)
+                    it->translate(-m_moveAccum);
+                m_doc->undoStack()->push(new TranslateItemsCommand(
+                    m_doc, m_doc->currentIndex(), m_doc->current().activeLayer,
+                    m_selection, m_moveAccum, QStringLiteral("Move")));
+            }
+            m_moveAccum = QPointF(0, 0);
+        } else if (m_rubber) {
+            selectInRect(m_rubberRect, (QApplication::keyboardModifiers() & Qt::ShiftModifier));
+            m_rubber = false;
+            update();
+        }
+    }
+}
+void Canvas::selectInRect(const QRectF &r, bool add)
+{
+    if (!m_doc)
+        return;
+    if (!add)
+        m_selection.clear();
+    Layer &ly = m_doc->current().active();
+    for (auto &it : ly.items) {
+        if (r.contains(it->boundingRect()) || r.intersects(it->boundingRect())) {
+            it->selected = true;
+            if (std::find(m_selection.begin(), m_selection.end(), it.get()) == m_selection.end())
+                m_selection.push_back(it.get());
+        }
+    }
+    update();
+}
+
+void Canvas::setSelectionSingle(Item *it)
+{
+    clearSelection();
+    if (it) {
+        it->selected = true;
+        m_selection.push_back(it);
+    }
+}
+
+void Canvas::addToSelection(Item *it)
+{
+    if (!it)
+        return;
+    if (std::find(m_selection.begin(), m_selection.end(), it) == m_selection.end()) {
+        it->selected = true;
+        m_selection.push_back(it);
+    }
+}
+
+void Canvas::removeFromSelection(Item *it)
+{
+    auto pos = std::find(m_selection.begin(), m_selection.end(), it);
+    if (pos != m_selection.end()) {
+        (*pos)->selected = false;
+        m_selection.erase(pos);
+    }
+}
+
+bool Canvas::hitTest(Item *it, const QPointF &sp, double radius) const
+{
+    if (!it)
+        return false;
+    const QRectF bb = it->boundingRect().adjusted(-radius, -radius, radius, radius);
+    if (!bb.contains(sp))
+        return false;
+
+    if (it->type() == ItemType::Stroke) {
+        const auto *s = static_cast<const StrokeItem *>(it);
+        if (s->points.size() == 1)
+            return std::hypot(sp.x() - s->points.first().x,
+                              sp.y() - s->points.first().y) <= radius + s->baseWidth;
+        for (int i = 1; i < s->points.size(); ++i) {
+            if (distToSegment(sp, s->points[i - 1].pos(), s->points[i].pos())
+                    <= radius + s->baseWidth * 0.5)
+                return true;
+        }
+        return false;
+    }
+    return true;
+}
+
+Item *Canvas::topItemAt(const QPointF &sp)
+{
+    if (!m_doc)
+        return nullptr;
+    Layer &ly = m_doc->current().active();
+    const double radius = 6.0 / m_scale;
+    for (auto it = ly.items.rbegin(); it != ly.items.rend(); ++it) {
+        if (hitTest(it->get(), sp, radius))
+            return it->get();
+    }
+    return nullptr;
+}
+
+// ---- mutations -------------------------------------------------------------
+void Canvas::commitAdd(ItemPtr item, const QString &text)
+{
+    if (!m_doc || !item)
+        return;
+    m_doc->undoStack()->push(new AddItemCommand(
+        m_doc, m_doc->currentIndex(), m_doc->current().activeLayer,
+        std::move(item), text));
+}
+
+void Canvas::eraseAt(const QPointF &sp)
+{
+    if (!m_doc)
+        return;
+    Layer &ly = m_doc->current().active();
+    const double radius = m_settings.eraserRadius;
+    for (std::size_t i = 0; i < ly.items.size();) {
+        if (hitTest(ly.items[i].get(), sp, radius)) {
+            m_eraseStash.push_back({ i, std::move(ly.items[i]) });
+            ly.items.erase(ly.items.begin() + static_cast<long>(i));
+        } else {
+            ++i;
+        }
+    }
+}
+
+void Canvas::finishErase()
+{
+    if (!m_doc || m_eraseStash.empty()) {
+        m_eraseStash.clear();
+        return;
+    }
+    // Reinsert the removed items, then remove them again through the undo stack
+    // so the whole erase gesture is a single undoable action.
+    Layer &ly = m_doc->current().active();
+    std::sort(m_eraseStash.begin(), m_eraseStash.end(),
+              [](const EraseStash &a, const EraseStash &b) { return a.index < b.index; });
+    std::vector<Item *> targets;
+    for (auto &st : m_eraseStash) {
+        const std::size_t idx = std::min(st.index, ly.items.size());
+        Item *raw = st.item.get();
+        ly.items.insert(ly.items.begin() + static_cast<long>(idx), std::move(st.item));
+        targets.push_back(raw);
+    }
+    m_eraseStash.clear();
+    if (!targets.empty())
+        m_doc->undoStack()->push(new RemoveItemsCommand(
+            m_doc, m_doc->currentIndex(), m_doc->current().activeLayer,
+            std::move(targets), QStringLiteral("Erase")));
+}
+
+void Canvas::addTextAt(const QPointF &sp)
+{
+    if (!m_doc)
+        return;
+    bool ok = false;
+    const QString text = QInputDialog::getText(
+        this, tr("Add Text"), tr("Text:"), QLineEdit::Normal, QString(), &ok);
+    if (!ok || text.isEmpty())
+        return;
+    auto item = std::make_unique<TextItem>();
+    item->pos   = sp;
+    item->text  = text;
+    item->color = m_settings.textColor;
+    item->font  = m_settings.textFont;
+    commitAdd(std::move(item), QStringLiteral("Text"));
+}
+
+void Canvas::cancelActive()
+{
+    m_activeStroke.reset();
+    m_activeShape.reset();
+    m_drawing = false;
+    m_erasing = false;
+    m_movingSelection = false;
+    m_rubber = false;
+    if (!m_eraseStash.empty() && m_doc) {
+        // Restore anything stashed by an interrupted erase gesture.
+        Layer &ly = m_doc->current().active();
+        std::sort(m_eraseStash.begin(), m_eraseStash.end(),
+                  [](const EraseStash &a, const EraseStash &b) { return a.index < b.index; });
+        for (auto &st : m_eraseStash) {
+            const std::size_t idx = std::min(st.index, ly.items.size());
+            ly.items.insert(ly.items.begin() + static_cast<long>(idx), std::move(st.item));
+        }
+    }
+    m_eraseStash.clear();
+}
+
+void Canvas::deleteSelection()
+{
+    if (!m_doc || m_selection.empty())
+        return;
+    std::vector<Item *> targets = m_selection;
+    m_doc->undoStack()->push(new RemoveItemsCommand(
+        m_doc, m_doc->currentIndex(), m_doc->current().activeLayer,
+        std::move(targets), QStringLiteral("Delete")));
+    m_selection.clear();
+    update();
+}
+
+void Canvas::selectAll()
+{
+    if (!m_doc)
+        return;
+    clearSelection();
+    Layer &ly = m_doc->current().active();
+    for (auto &it : ly.items) {
+        it->selected = true;
+        m_selection.push_back(it.get());
+    }
+    update();
+}
+
+void Canvas::clearSelection()
+{
+    for (Item *it : m_selection)
+        it->selected = false;
+    m_selection.clear();
+    update();
+}
+
+void Canvas::updateCursor()
+{
+    switch (m_settings.tool) {
+    case ToolId::Eraser:
+        setCursor(Qt::BlankCursor);
+        break;
+    case ToolId::Text:
+        setCursor(Qt::IBeamCursor);
+        break;
+    default:
+        setCursor(Qt::ArrowCursor);
+        break;
+    }
+}
+
+} // namespace ib
+EOF
+
+log "PART 14 complete: page-size presets (infinite / A4 / A5 / Letter / Legal / custom) with paper-sheet rendering, persistence, and a right-click Page Size menu"
