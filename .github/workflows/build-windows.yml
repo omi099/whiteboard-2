@@ -28,20 +28,28 @@ jobs:
       with:
         python-version: '3.10'
 
+    - name: Install Ninja & aqtinstall
+      shell: pwsh
+      run: pip install ninja aqtinstall
+
     - name: Download & Install Qt 6.5.3
       shell: pwsh
       run: |
-        pip install aqtinstall
         python -m aqt install-qt windows desktop 6.5.3 win64_msvc2019_64
 
-    - name: Configure CMake
+    - name: Setup MSVC Developer Command Prompt
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x64
+
+    - name: Configure CMake (Using Ninja)
       shell: pwsh
       run: |
         $QT_DIR = "${{ github.workspace }}/6.5.3/msvc2019_64"
         if (Test-Path "WhiteboardPro") { cd WhiteboardPro }
         
-        # Removed the strict -G Visual Studio flag. CMake will safely auto-detect the default compiler.
-        cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_DIR"
+        # Ninja perfectly detects the compiler without the Visual Studio generator errors
+        cmake -B build -S . -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_DIR"
 
     - name: Build Application
       shell: pwsh
@@ -57,12 +65,18 @@ jobs:
         
         mkdir deploy
         
-        if (Test-Path "WhiteboardPro/build/Release/WhiteboardPro.exe") {
-            copy WhiteboardPro/build/Release/WhiteboardPro.exe deploy/
+        # Ninja places the EXE directly in the build folder. 
+        # These checks guarantee we find it regardless of where setup.sh placed it.
+        if (Test-Path "WhiteboardPro/build/WhiteboardPro.exe") {
+            copy WhiteboardPro/build/WhiteboardPro.exe deploy/
+        } elseif (Test-Path "build/WhiteboardPro.exe") {
+            copy build/WhiteboardPro.exe deploy/
         } else {
-            copy build/Release/WhiteboardPro.exe deploy/
+            Write-Error "Could not find WhiteboardPro.exe. Build failed."
+            exit 1
         }
         
+        # Bundle required DLLs
         windeployqt --release --no-translations --no-opengl-sw deploy/WhiteboardPro.exe
 
     - name: Upload Final EXE Artifact
