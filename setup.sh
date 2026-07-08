@@ -2638,3 +2638,8 @@ void MainWindow::onTogglePresent()
 EOF
 
 echo ">> Part 5 done. UI shell (ColorButton + MainWindow) written."
+
+# --- fix API mismatches in MainWindow.cpp ---
+sed -i 's/m_canvas->deleteCurrentPage();/m_canvas->deletePage();/' src/ui/MainWindow.cpp
+sed -i 's/Theme::apply(qApp,/Theme::apply(*qApp,/g' src/ui/MainWindow.cpp
+echo ">> Patched MainWindow.cpp (deletePage + Theme::apply ref)"
