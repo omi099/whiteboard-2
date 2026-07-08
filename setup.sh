@@ -15241,3 +15241,40 @@ grep -q "Qt::Key_Left" src/canvas/Canvas.cpp \
 	|| { echo "PART 19 ERROR: arrow-key patch did not apply"; exit 1; }
 
 log "PART 19 complete: bare wheel/two-finger scroll pans (H+V), Ctrl+wheel zooms, arrow keys pan (Shift = faster)"
+
+
+# ---------------------------------------------------------------------------
+#  PART 20 : Stop drawing the brush-preview overlay that followed the cursor
+#            (dot for pen/highlighter/shapes, soft glow for laser). It was
+#            distracting while drawing. The eraser keeps its dashed ring only,
+#            because its system cursor is hidden and the ring is its sole size
+#            indicator. Rewrites Canvas::drawBrushPreview only.
+# ---------------------------------------------------------------------------
+log "PART 20: remove pointer-follow preview circles (keep eraser ring only)"
+
+NEW_PREVIEW=$(cat <<'CPP'
+void Canvas::drawBrushPreview(QPainter &p)
+{
+	// Only the eraser shows a cursor ring; its system cursor is hidden, so the
+	// ring is the sole size indicator. No preview dot/glow for other tools -
+	// this keeps the drawing surface clean under the pen.
+	if (!m_hoverValid || m_panning)
+		return;
+	if (m_settings.tool != ToolId::Eraser)
+		return;
+
+	const double r = m_settings.eraserRadius * m_scale;
+	QPen pen(QColor(70, 70, 70));
+	pen.setStyle(Qt::DashLine);
+	p.setPen(pen);
+	p.setBrush(Qt::NoBrush);
+	p.drawEllipse(m_cursorWidget, r, r);
+}
+CPP
+)
+export NEW_PREVIEW
+perl -0777 -i -pe 'BEGIN{$r=$ENV{NEW_PREVIEW}} s/void\s+Canvas::drawBrushPreview\s*\(\s*QPainter\s*&\s*p\s*\)\s*\{.*?\n\}/$r/s' src/canvas/Canvas.cpp
+grep -q "sole size indicator" src/canvas/Canvas.cpp \
+	|| { echo "PART 20 ERROR: drawBrushPreview patch did not apply"; exit 1; }
+
+log "PART 20 complete: no more preview circles under the pointer (eraser ring kept)"
