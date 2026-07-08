@@ -13,14 +13,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up MSVC (x64)
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-
-      - name: Install Ninja
-        shell: pwsh
-        run: choco install ninja -y
+      - name: Generate project from setup.sh
+        shell: bash
+        run: bash setup.sh
 
       - name: Install Qt 6.8.1
         uses: jurplel/install-qt-action@v4
@@ -32,35 +27,25 @@ jobs:
           cache: true
           setup-python: false
 
-      - name: Generate sources (assemble + run setup.sh)
-        shell: bash
-        run: |
-          cat chunk1.sh > setup.sh
-          for c in chunk2.sh chunk3.sh chunk4.sh chunk5.sh; do
-            tail -n +2 "$c" >> setup.sh
-          done
-          chmod +x setup.sh
-          bash setup.sh
-          echo "----- generated tree -----"
-          find src resources CMakeLists.txt -maxdepth 3 -type f | sort
+      - name: Setup MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
 
       - name: Configure (CMake + Ninja)
         shell: pwsh
-        run: >
-          cmake -B build -G Ninja
-          -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR"
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR"
 
       - name: Build
         shell: pwsh
-        run: cmake --build build
+        run: cmake --build build --config Release
 
-      - name: Deploy Qt runtime
+      - name: Bundle Qt runtime (windeployqt)
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item build/Whiteboard.exe dist/
-          & "$env:QT_ROOT_DIR\bin\windeployqt.exe" --release --no-translations --no-compiler-runtime dist/Whiteboard.exe
+          & "$env:QT_ROOT_DIR\bin\windeployqt.exe" --release --no-translations --compiler-runtime dist/Whiteboard.exe
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
