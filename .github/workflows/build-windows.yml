@@ -39,7 +39,7 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE/pen-whiteboard"
           {
-             for f in src/core/Settings.h src/ui/PreferencesDialog.h src/ui/PreferencesDialog.cpp src/canvas/Canvas.cpp; do
+             for f in src/model/StrokeItem.h src/model/StrokeItem.cpp; do
               echo "===================================================================="
               if [ -f "$f" ]; then
                 echo "===== FILE: $f ====="
