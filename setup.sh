@@ -15379,3 +15379,74 @@ perl -0777 -i -pe 'BEGIN{$b=$ENV{BRUSH_BODY}} s/(void\s+Canvas::drawBrushPreview
 grep -q "sole tip indicator, no rings" src/canvas/Canvas.cpp || { echo "PART 24 ERROR: drawBrushPreview was not patched"; exit 1; }
 
 log "PART 24 complete: tip dot restored, preview rings removed"
+
+# ============================================================
+# PART 25 — kill the Windows pen "press-and-hold" gesture ring
+# ============================================================
+log "PART 25: disabling Windows pen press-and-hold ring"
+
+# --- MainWindow.h: declare nativeEvent override ---
+grep -q "nativeEvent" src/ui/MainWindow.h || \
+perl -0777 -i -pe 's/(void\s+closeEvent\s*\(\s*QCloseEvent\s*\*\s*e\s*\)\s*override\s*;)/$1\n\tbool nativeEvent(const QByteArray &eventType, void *message, qintptr *result) override;/s' src/ui/MainWindow.h
+grep -q "nativeEvent" src/ui/MainWindow.h || { echo "PART 25 ERROR: MainWindow.h nativeEvent decl not added"; exit 1; }
+
+# --- MainWindow.cpp: Windows tablet gesture constants (before namespace) ---
+MW_WIN_BLOCK=$(cat <<'CPP'
+#ifdef Q_OS_WIN
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <windows.h>
+#  ifndef WM_TABLET_DEFBASE
+#    define WM_TABLET_DEFBASE 0x02C0
+#  endif
+#  ifndef WM_TABLET_QUERYSYSTEMGESTURESTATUS
+#    define WM_TABLET_QUERYSYSTEMGESTURESTATUS (WM_TABLET_DEFBASE + 12)
+#  endif
+#  ifndef TABLET_DISABLE_PRESSANDHOLD
+#    define TABLET_DISABLE_PRESSANDHOLD 0x00000001
+#  endif
+#  ifndef TABLET_DISABLE_PENTAPFEEDBACK
+#    define TABLET_DISABLE_PENTAPFEEDBACK 0x00000008
+#  endif
+#  ifndef TABLET_DISABLE_PENBARRELFEEDBACK
+#    define TABLET_DISABLE_PENBARRELFEEDBACK 0x00000010
+#  endif
+#endif
+
+CPP
+)
+export MW_WIN_BLOCK
+grep -q "TABLET_DISABLE_PRESSANDHOLD" src/ui/MainWindow.cpp || \
+perl -0777 -i -pe 'BEGIN{$b=$ENV{MW_WIN_BLOCK}} s/(\nnamespace ib \{)/\n$b$1/' src/ui/MainWindow.cpp
+grep -q "TABLET_DISABLE_PRESSANDHOLD" src/ui/MainWindow.cpp || { echo "PART 25 ERROR: tablet defines not inserted"; exit 1; }
+
+# --- MainWindow.cpp: nativeEvent implementation (before closing namespace) ---
+MW_NATIVE_IMPL=$(cat <<'CPP'
+bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr *result)
+{
+#ifdef Q_OS_WIN
+    MSG *msg = static_cast<MSG *>(message);
+    if (msg && msg->message == WM_TABLET_QUERYSYSTEMGESTURESTATUS) {
+        // Turn off the Windows pen "press-and-hold" right-click ring plus the
+        // pen tap / barrel feedback, so no gesture rings appear under the pen.
+        *result = TABLET_DISABLE_PRESSANDHOLD
+                | TABLET_DISABLE_PENTAPFEEDBACK
+                | TABLET_DISABLE_PENBARRELFEEDBACK;
+        return true;
+    }
+#endif
+    return QMainWindow::nativeEvent(eventType, message, result);
+}
+
+CPP
+)
+export MW_NATIVE_IMPL
+grep -q "MainWindow::nativeEvent" src/ui/MainWindow.cpp || \
+perl -0777 -i -pe 'BEGIN{$i=$ENV{MW_NATIVE_IMPL}} s/(\}\s*\/\/\s*namespace ib)/$i$1/s' src/ui/MainWindow.cpp
+grep -q "MainWindow::nativeEvent" src/ui/MainWindow.cpp || { echo "PART 25 ERROR: MainWindow.cpp nativeEvent impl missing"; exit 1; }
+
+log "PART 25 complete: pen press-and-hold gesture ring disabled"
