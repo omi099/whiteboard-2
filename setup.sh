@@ -15322,23 +15322,3 @@ int main(int argc, char **argv)
 EOF
 
 log "PART 21 complete: dark toolbar, white labels, white-on-hover dark text, blue active tool"
-
-# ---------------------------------------------------------------------------
-#  PART 22 : True in-place text editing. A QTextEdit overlay appears at the
-#            click point, auto-resizes to its content (cannot bloat), commits
-#            on focus-out or Ctrl+Enter, cancels on Esc. Double-click any text
-#            item to edit it in place (undo-safe via a macro). Replaces the old
-#            QInputDialog flow. Patches Canvas.h and Canvas.cpp.
-# ---------------------------------------------------------------------------
-log "PART 22: in-place text editor (auto-sizing, double-click to edit)"
-
-# --- Canvas.h: forward decls, override, methods, members -----------------
-perl -0777 -i -pe 's/(class QTimer;)/$1\nclass QTextEdit;/'                                   src/canvas/Canvas.h
-perl -0777 -i -pe 's/(class Canvas : public QWidget)/class TextItem;\n\n$1/'                    src/canvas/Canvas.h
-perl -0777 -i -pe 's/(void\s+mousePressEvent\s*\(\s*QMouseEvent\s*\*\s*e\s*\)\s*override\s*;)/$1\n\tvoid mouseDoubleClickEvent(QMouseEvent *e) override;/' src/canvas/Canvas.h
-perl -0777 -i -pe 's/(void\s+addTextAt\s*\(\s*const\s+QPointF\s*&\s*sp\s*\)\s*;)/$1\n\tvoid beginInlineText(const QPointF &scenePos, TextItem *existing = nullptr);\n\tvoid commitInlineText();\n\tvoid cancelInlineText();/' src/canvas/Canvas.h
-perl -0777 -i -pe 's/(bool\s+m_hoverValid\s*=\s*false\s*;)/$1\n\n\tQTextEdit *m_textEditor = nullptr;\n\tQPointF    m_textScenePos;\n\tTextItem  *m_editingText = nullptr;/' src/canvas/Canvas.h
-grep -q "beginInlineText" src/canvas/Canvas.h || { echo "PART 22 ERROR: Canvas.h patches failed"; exit 1; }
-
-# --- Canvas.cpp: includes ------------------------------------------------
-perl -0777 -i -pe 's/(#include <QLineEdit>)/
