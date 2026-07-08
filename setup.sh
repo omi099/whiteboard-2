@@ -3634,3 +3634,32 @@ echo "  Next:"
 echo "    cmake -B build -DCMAKE_BUILD_TYPE=Release"
 echo "    cmake --build build --config Release"
 echo "=================================================================="
+
+# ---------------------------------------------------------------------------
+#  PART 7 : post-generation source patches (compile-fix pass)
+#  Appended after PART 6. Runs from inside pen-whiteboard/ (cwd unchanged).
+#  Fixes:
+#   1) Canvas.cpp  : add TextItem/ImageItem includes (make_unique<TextItem>)
+#   2) MainWindow  : include <QUndoStack> (Document.h only forward-declares it)
+#   3) MainWindow  : ib::io Serializer/Exporter are free functions, not classes
+#   4) main.cpp    : drop deprecated AA_UseHighDpiPixmaps (C4996)
+# ---------------------------------------------------------------------------
+log "PART 7: applying compile-fix patches"
+
+# 1) Canvas.cpp needs the concrete TextItem type for make_unique<TextItem>().
+sed -i 's|#include "core/Commands.h"|#include "core/Commands.h"\n#include "model/TextItem.h"\n#include "model/ImageItem.h"|' src/canvas/Canvas.cpp
+
+# 2) MainWindow.cpp must see the full QUndoStack definition.
+sed -i 's|#include <QMenuBar>|#include <QUndoStack>\n#include <QMenuBar>|' src/ui/MainWindow.cpp
+
+# 3) ib::io serializer/exporter entry points are free functions in namespace io.
+sed -i 's|io::Serializer::|io::|g' src/ui/MainWindow.cpp
+sed -i 's|io::Exporter::|io::|g' src/ui/MainWindow.cpp
+
+# 4) Remove the deprecated high-DPI attribute (no effect in Qt 6, emits C4996).
+sed -i '/AA_UseHighDpiPixmaps/d' src/main.cpp
+
+log "PART 7 complete: compile-fix patches applied"
+# ---------------------------------------------------------------------------
+#  END OF PART 7  —  setup.sh is complete.
+# ---------------------------------------------------------------------------
