@@ -16,7 +16,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up MSVC environment   # ensures setup.sh's compiler check passes
+      - name: Set up MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
@@ -33,7 +33,46 @@ jobs:
 
       - name: Generate project (run setup.sh)
         shell: bash
-        run: bash setup.sh          # runs at repo root -> creates ./pen-whiteboard
+        run: bash setup.sh
+
+      - name: Verify generated sources
+        shell: bash
+        run: |
+          echo "===== PART markers found in setup.sh ====="
+          grep -nE "PART[[:space:]]*[1-6]" setup.sh || echo "!! No PART markers found"
+          echo
+          echo "===== Generated source tree ====="
+          find pen-whiteboard/src -type f 2>/dev/null | sort || echo "!! no pen-whiteboard/src dir"
+          echo
+          echo "===== Checking required source files ====="
+          missing=0
+          req="
+            src/app/main.cpp src/app/MainWindow.cpp
+            src/model/Item.cpp src/model/StrokeItem.cpp src/model/ShapeItem.cpp
+            src/model/TextItem.cpp src/model/ImageItem.cpp src/model/Layer.cpp
+            src/model/Page.cpp src/model/Document.cpp src/model/History.cpp
+            src/ink/Smoothing.cpp src/ink/Tessellator.cpp
+            src/render/CanvasRenderer.cpp src/render/Viewport.cpp src/render/CanvasWidget.cpp
+            src/input/InputRouter.cpp src/input/PressureCurve.cpp
+            src/tools/ToolManager.cpp src/tools/PenTool.cpp src/tools/HighlighterTool.cpp
+            src/tools/EraserTool.cpp src/tools/SelectTool.cpp src/tools/ShapeTool.cpp
+            src/tools/TextTool.cpp src/tools/ImageTool.cpp src/tools/LaserTool.cpp
+            src/io/BoardSerializer.cpp src/io/Exporters.cpp src/io/PdfImporter.cpp
+            src/io/AutosaveManager.cpp
+            src/ui/ToolBarWidget.cpp src/ui/ColorPalette.cpp src/ui/PreferencesDialog.cpp
+            src/ui/ThemeManager.cpp src/ui/ShortcutManager.cpp
+            src/util/Log.cpp src/util/Settings.cpp
+          "
+          for f in $req; do
+            if [ ! -f "pen-whiteboard/$f" ]; then echo "MISSING: $f"; missing=1; fi
+          done
+          if [ "$missing" = "1" ]; then
+            echo
+            echo ">>> Your setup.sh did not create the files above."
+            echo ">>> That means the PART(s) defining them are absent from setup.sh."
+            exit 1
+          fi
+          echo "OK: all required source files were generated."
 
       - name: Configure (Visual Studio 2022, x64)
         working-directory: pen-whiteboard
