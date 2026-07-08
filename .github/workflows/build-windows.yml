@@ -1,54 +1,67 @@
-name: Build Windows EXE
+name: Windows EXE Release
 
 on:
   push:
-    branches: [ main, master ]
-  workflow_dispatch:
+    branches: [ "main", "master" ]
+  workflow_dispatch: # Allows you to manually click "Run workflow" in GitHub Actions
 
 jobs:
   build:
     runs-on: windows-latest
-
+    
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    - name: Checkout Code
+      uses: actions/checkout@v4
 
-      - name: Generate project from setup.sh
-        shell: bash
-        run: bash setup.sh
+    - name: Execute setup.sh to Generate C++ Architecture
+      shell: bash
+      run: |
+        # This uses GitHub's built-in Git Bash to run your shell script on Windows
+        chmod +x setup.sh
+        ./setup.sh
 
-      - name: Install Qt 6.8.1
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: "6.8.1"
-          host: windows
-          target: desktop
-          arch: win64_msvc2022_64
-          cache: true
-          setup-python: false
+    - name: Install Python (Required for aqtinstall)
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
 
-      - name: Setup MSVC environment
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
+    - name: Download & Install Qt 6.5.3
+      shell: pwsh
+      run: |
+        pip install aqtinstall
+        python -m aqt install-qt windows desktop 6.5.3 win64_msvc2019_64 -m qtbase
 
-      - name: Configure (CMake + Ninja)
-        shell: pwsh
-        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR"
+    - name: Configure CMake
+      shell: pwsh
+      run: |
+        # setup.sh creates the WhiteboardPro folder. We point CMake there.
+        $QT_DIR = "${{ github.workspace }}/6.5.3/msvc2019_64"
+        cd WhiteboardPro
+        cmake -B build -S . -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_DIR"
 
-      - name: Build
-        shell: pwsh
-        run: cmake --build build --config Release
+    - name: Build Application (MSVC C++20)
+      shell: pwsh
+      run: |
+        cd WhiteboardPro
+        cmake --build build --config Release
 
-      - name: Bundle Qt runtime (windeployqt)
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item build/Whiteboard.exe dist/
-          & "$env:QT_ROOT_DIR\bin\windeployqt.exe" --release --no-translations --compiler-runtime dist/Whiteboard.exe
+    - name: Package Dependencies (windeployqt)
+      shell: pwsh
+      run: |
+        # Add Qt to system path for deployment
+        $QT_DIR = "${{ github.workspace }}/6.5.3/msvc2019_64"
+        $ENV:PATH = "$QT_DIR/bin;" + $ENV:PATH
+        
+        mkdir deploy
+        # Move the compiled EXE to a clean deployment folder
+        copy WhiteboardPro/build/Release/WhiteboardPro.exe deploy/
+        
+        # Pull in all necessary Qt DLLs automatically, stripping bloat
+        windeployqt --release --no-translations --no-opengl-sw deploy/WhiteboardPro.exe
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Whiteboard-windows-x64
-          path: dist
+    - name: Upload Final EXE Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: WhiteboardPro-Windows-Standalone
+        path: deploy/
+        retention-days: 7
