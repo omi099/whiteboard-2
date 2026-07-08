@@ -6,10 +6,6 @@ on:
     tags: [ 'v*' ]
   workflow_dispatch:
 
-env:
-  QT_VERSION: 6.8.1
-  APP_NAME: Whiteboard
-
 jobs:
   build-windows:
     runs-on: windows-latest
@@ -17,7 +13,6 @@ jobs:
       - name: Checkout (gets setup.sh)
         uses: actions/checkout@v4
 
-      # 1. Generate the whole project from setup.sh (bash ships with windows-latest via Git)
       - name: Scaffold project
         shell: bash
         run: |
@@ -34,7 +29,7 @@ jobs:
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
-          version: $ env.QT_VERSION 
+          version: "6.8.1"
           host: windows
           target: desktop
           arch: win64_msvc2022_64
@@ -55,12 +50,12 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $exe = Get-ChildItem -Path build -Recurse -Filter "$env:APP_NAME.exe" | Select-Object -First 1
-          if (-not $exe) { Write-Error "Could not find $env:APP_NAME.exe under build/."; exit 1 }
+          $exe = Get-ChildItem -Path build -Recurse -Filter "Whiteboard.exe" | Select-Object -First 1
+          if (-not $exe) { Write-Error "Could not find Whiteboard.exe under build/."; exit 1 }
           Write-Host "Found exe: $($exe.FullName)"
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item $exe.FullName -Destination dist\
-          & "$env:QT_ROOT_DIR\bin\windeployqt.exe" --release --dir dist --no-translations --compiler-runtime "dist\$env:APP_NAME.exe"
+          & "$env:QT_ROOT_DIR\bin\windeployqt.exe" --release --dir dist --no-translations --compiler-runtime "dist\Whiteboard.exe"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
