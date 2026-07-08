@@ -15450,3 +15450,54 @@ perl -0777 -i -pe 'BEGIN{$i=$ENV{MW_NATIVE_IMPL}} s/(\}\s*\/\/\s*namespace ib)/$
 grep -q "MainWindow::nativeEvent" src/ui/MainWindow.cpp || { echo "PART 25 ERROR: MainWindow.cpp nativeEvent impl missing"; exit 1; }
 
 log "PART 25 complete: pen press-and-hold gesture ring disabled"
+
+
+# ============================================================
+# PART 26 — recoverable Notebook sidebar (toolbar button + View toggle)
+# ============================================================
+log "PART 26: adding Show Sidebar toggle"
+
+# --- MainWindow.h: forward declare QDockWidget + hold the dock as a member ---
+grep -q "class QDockWidget;" src/ui/MainWindow.h || \
+perl -0777 -i -pe 's/(class QToolBar;)/$1\nclass QDockWidget;/' src/ui/MainWindow.h
+
+grep -q "m_nbDock" src/ui/MainWindow.h || \
+perl -0777 -i -pe 's/(Canvas\s*\*\s*m_canvas\s*=\s*nullptr;)/$1\n\tQDockWidget *m_nbDock = nullptr;/' src/ui/MainWindow.h
+
+grep -q "m_nbDock" src/ui/MainWindow.h || { echo "PART 26 ERROR: MainWindow.h member not added"; exit 1; }
+
+# --- MainWindow.cpp: make the dock a member (assignment, not a new local) ---
+perl -0777 -i -pe 's/QDockWidget\s*\*\s*nbDock\s*=\s*new\s+QDockWidget/m_nbDock = new QDockWidget/' src/ui/MainWindow.cpp
+perl -0777 -i -pe 's/\bnbDock\b/m_nbDock/g' src/ui/MainWindow.cpp
+grep -q "m_nbDock = new QDockWidget" src/ui/MainWindow.cpp || { echo "PART 26 ERROR: dock not converted to member"; exit 1; }
+
+# --- MainWindow.cpp: add the toggle to the View menu ---
+VIEW_TOGGLE=$(cat <<'CPP'
+	if (m_nbDock) {
+		QAction *toggleSidebar = m_nbDock->toggleViewAction();
+		toggleSidebar->setText(tr("Show &Sidebar"));
+		toggleSidebar->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_B));
+		view->addAction(toggleSidebar);
+		view->addSeparator();
+	}
+CPP
+)
+export VIEW_TOGGLE
+grep -q "Show &Sidebar" src/ui/MainWindow.cpp || \
+perl -0777 -i -pe 'BEGIN{$t=$ENV{VIEW_TOGGLE}} s/(QMenu\s*\*\s*view\s*=\s*menuBar\(\)->addMenu\(tr\("&View"\)\);)/$1\n$t/' src/ui/MainWindow.cpp
+grep -q "Show &Sidebar" src/ui/MainWindow.cpp || { echo "PART 26 ERROR: View toggle not inserted"; exit 1; }
+
+# --- MainWindow.cpp: add the same toggle as a toolbar button ---
+TB_TOGGLE=$(cat <<'CPP'
+	if (m_nbDock) {
+		toolBar->addSeparator();
+		toolBar->addAction(m_nbDock->toggleViewAction());
+	}
+CPP
+)
+export TB_TOGGLE
+grep -q "toolBar->addAction(m_nbDock->toggleViewAction());" src/ui/MainWindow.cpp || \
+perl -0777 -i -pe 'BEGIN{$t=$ENV{TB_TOGGLE}} s/(toolBar->addAction\(pair\.second\);)/$1\n$t/' src/ui/MainWindow.cpp
+grep -q "toolBar->addAction(m_nbDock->toggleViewAction());" src/ui/MainWindow.cpp || { echo "PART 26 ERROR: toolbar toggle not inserted"; exit 1; }
+
+log "PART 26 complete: Notebook sidebar can be reopened (toolbar button + Ctrl+B)"
