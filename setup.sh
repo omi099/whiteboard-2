@@ -14424,3 +14424,694 @@ bool exportPdf(const Document &doc, const QString &path, QString *error)
 EOF
 
 log "PART 16 complete: vector export is now page-size aware with full backgrounds (PDF per-page sheet size/orientation, PNG/SVG honor finite sheets)"
+
+# ---------------------------------------------------------------------------
+#  PART 17 : Notebook -> Sections -> Pages (OneNote-style).
+#            - Page gains a "section" label (persisted, backward compatible).
+#            - New docked sidebar: sections list + pages list, with
+#              add / rename / delete for sections, new-page / delete for pages,
+#              live two-way sync with the current page, and per-page
+#              orientation hints.
+#            - Uses ONLY Document's existing API (addPage/removePage/
+#              setCurrentIndex/page/current), so the undo stack, Canvas and
+#              Commands are completely unchanged (pointer-stable, undo-safe).
+#            - MainWindow + CMakeLists patched via anchored sed (no rewrite).
+# ---------------------------------------------------------------------------
+log "PART 17: notebook sections + pages sidebar (OneNote-style navigation & storage)"
+
+# 1) Page gains a section label ------------------------------------------------
+cat > src/model/Page.h <<'EOF'
+#pragma once
+
+#include <QColor>
+#include <QRectF>
+#include <QString>
+#include <vector>
+
+#include "model/Layer.h"
+#include "model/Types.h"
+
+namespace ib {
+
+struct Page {
+    BackgroundKind background   = BackgroundKind::Grid;
+    QColor         bgColor      = QColor(255, 255, 255);
+    QColor         gridColor    = QColor(223, 223, 223);   // major / primary grid
+    double         gridSpacing  = 40.0;                     // major spacing (px)
+
+    // Granular background engine.
+    QColor         minorColor     = QColor(233, 236, 239);  // minor grid (graph/log)
+    int            minorDivisions = 5;                       // minor cells per major cell
+    bool           showAxes       = false;                   // draw x=0 / y=0 axes
+    QColor         axisColor      = QColor(120, 120, 120);
+
+    // Page geometry (Part 14).
+    bool           infinite     = true;
+    double         pageWidth    = 794.0;
+    double         pageHeight   = 1123.0;
+
+    // Notebook organization (Part 17): the section this page belongs to.
+    QString        section      = QStringLiteral("Section 1");
+
+    std::vector<Layer> layers;
+    int            activeLayer  = 0;
+
+    Page() { layers.emplace_back(); }
+
+    Layer &active() {
+        if (layers.empty()) layers.emplace_back();
+        if (activeLayer < 0 || activeLayer >= static_cast<int>(layers.size()))
+            activeLayer = 0;
+        return layers[static_cast<std::size_t>(activeLayer)];
+    }
+
+    // Union of every visible item's bounding rect (empty if the page is blank).
+    QRectF contentBounds() const {
+        QRectF r;
+        for (const auto &layer : layers) {
+            if (!layer.visible) continue;
+            for (const auto &it : layer.items)
+                r = r.isNull() ? it->boundingRect() : r.united(it->boundingRect());
+        }
+        return r;
+    }
+};
+
+} // namespace ib
+EOF
+
+# 2) Serializer persists the section label (additive, backward compatible) -----
+cat > src/core/Serializer.cpp <<'EOF'
+#include "core/Serializer.h"
+
+#include "model/Document.h"
+#include "model/Item.h"
+
+#include <QFile>
+#include <QSaveFile>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QJsonParseError>
+#include <QColor>
+
+namespace ib {
+namespace io {
+
+static QJsonArray colorToJson(const QColor &c)
+{
+    QJsonArray a;
+    a.append(c.red());
+    a.append(c.green());
+    a.append(c.blue());
+    a.append(c.alpha());
+    return a;
+}
+
+static QColor colorFromJson(const QJsonValue &v, const QColor &def)
+{
+    const QJsonArray a = v.toArray();
+    if (a.size() < 3)
+        return def;
+    const int alpha = a.size() >= 4 ? a.at(3).toInt(255) : 255;
+    return QColor(a.at(0).toInt(), a.at(1).toInt(), a.at(2).toInt(), alpha);
+}
+
+static ItemType typeFromString(const QString &s)
+{
+    if (s == QLatin1String("stroke")) return ItemType::Stroke;
+    if (s == QLatin1String("shape"))  return ItemType::Shape;
+    if (s == QLatin1String("text"))   return ItemType::Text;
+    return ItemType::Image;
+}
+
+static QJsonObject pageToJson(const Page &pg)
+{
+    QJsonObject o;
+    o["background"]     = static_cast<int>(pg.background);
+    o["bgColor"]        = colorToJson(pg.bgColor);
+    o["gridColor"]      = colorToJson(pg.gridColor);
+    o["gridSpacing"]    = pg.gridSpacing;
+    o["minorColor"]     = colorToJson(pg.minorColor);
+    o["minorDivisions"] = pg.minorDivisions;
+    o["showAxes"]       = pg.showAxes;
+    o["axisColor"]      = colorToJson(pg.axisColor);
+    o["infinite"]       = pg.infinite;
+    o["pageWidth"]      = pg.pageWidth;
+    o["pageHeight"]     = pg.pageHeight;
+    o["section"]        = pg.section;
+    o["activeLayer"]    = pg.activeLayer;
+
+    QJsonArray layers;
+    for (const auto &ly : pg.layers) {
+        QJsonObject lo;
+        lo["name"]    = ly.name;
+        lo["visible"] = ly.visible;
+        lo["locked"]  = ly.locked;
+        lo["opacity"] = ly.opacity;
+
+        QJsonArray items;
+        for (const auto &it : ly.items) {
+            QJsonObject io;
+            it->write(io);
+            items.append(io);
+        }
+        lo["items"] = items;
+        layers.append(lo);
+    }
+    o["layers"] = layers;
+    return o;
+}
+
+static Page pageFromJson(const QJsonObject &o)
+{
+    Page pg;
+    pg.background   = static_cast<BackgroundKind>(
+        o.value("background").toInt(static_cast<int>(BackgroundKind::Grid)));
+    pg.bgColor      = colorFromJson(o.value("bgColor"), QColor(255, 255, 255));
+    pg.gridColor    = colorFromJson(o.value("gridColor"), QColor(223, 223, 223));
+    pg.gridSpacing  = o.value("gridSpacing").toDouble(40.0);
+
+    pg.minorColor     = colorFromJson(o.value("minorColor"), QColor(233, 236, 239));
+    pg.minorDivisions = o.value("minorDivisions").toInt(5);
+    pg.showAxes       = o.value("showAxes").toBool(false);
+    pg.axisColor      = colorFromJson(o.value("axisColor"), QColor(120, 120, 120));
+
+    pg.infinite     = o.value("infinite").toBool(true);
+    pg.pageWidth    = o.value("pageWidth").toDouble(794.0);
+    pg.pageHeight   = o.value("pageHeight").toDouble(1123.0);
+    pg.section      = o.value("section").toString(QStringLiteral("Section 1"));
+
+    pg.layers.clear();
+    const QJsonArray layers = o.value("layers").toArray();
+    for (const auto &lv : layers) {
+        const QJsonObject lo = lv.toObject();
+        Layer ly;
+        ly.name    = lo.value("name").toString(QStringLiteral("Layer"));
+        ly.visible = lo.value("visible").toBool(true);
+        ly.locked  = lo.value("locked").toBool(false);
+        ly.opacity = lo.value("opacity").toDouble(1.0);
+
+        const QJsonArray items = lo.value("items").toArray();
+        for (const auto &iv : items) {
+            const QJsonObject io = iv.toObject();
+            ItemPtr item = makeItem(typeFromString(io.value("type").toString()));
+            if (item) {
+                item->read(io);
+                ly.items.push_back(std::move(item));
+            }
+        }
+        pg.layers.push_back(std::move(ly));
+    }
+    if (pg.layers.empty())
+        pg.layers.emplace_back();
+
+    pg.activeLayer = o.value("activeLayer").toInt(0);
+    return pg;
+}
+
+QByteArray toBytes(const Document &doc)
+{
+    QJsonObject root;
+    root["format"]  = "inkboard";
+    root["version"] = 1;
+
+    QJsonArray pages;
+    for (int i = 0; i < doc.pageCount(); ++i)
+        pages.append(pageToJson(doc.page(i)));
+    root["pages"] = pages;
+
+    return QJsonDocument(root).toJson(QJsonDocument::Indented);
+}
+
+bool fromBytes(std::vector<Page> &pagesOut, const QByteArray &bytes, QString *error)
+{
+    QJsonParseError pe;
+    const QJsonDocument doc = QJsonDocument::fromJson(bytes, &pe);
+    if (pe.error != QJsonParseError::NoError) {
+        if (error) *error = pe.errorString();
+        return false;
+    }
+    const QJsonObject root = doc.object();
+    if (root.value("format").toString() != QLatin1String("inkboard")) {
+        if (error) *error = QStringLiteral("Not an InkBoard (.iboard) file.");
+        return false;
+    }
+
+    pagesOut.clear();
+    const QJsonArray pages = root.value("pages").toArray();
+    for (const auto &pv : pages)
+        pagesOut.push_back(pageFromJson(pv.toObject()));
+    if (pagesOut.empty())
+        pagesOut.emplace_back();
+    return true;
+}
+
+bool saveToFile(const Document &doc, const QString &path, QString *error)
+{
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) {
+        if (error) *error = file.errorString();
+        return false;
+    }
+    const QByteArray bytes = toBytes(doc);
+    if (file.write(bytes) != bytes.size()) {
+        if (error) *error = file.errorString();
+        return false;
+    }
+    if (!file.commit()) {
+        if (error) *error = file.errorString();
+        return false;
+    }
+    return true;
+}
+
+bool loadFromFile(Document &doc, const QString &path, QString *error)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (error) *error = file.errorString();
+        return false;
+    }
+    const QByteArray bytes = file.readAll();
+    std::vector<Page> pages;
+    if (!fromBytes(pages, bytes, error))
+        return false;
+
+    doc.setPages(std::move(pages));
+    doc.setFilePath(path);
+    return true;
+}
+
+} // namespace io
+} // namespace ib
+EOF
+
+# 3) New OneNote-style sidebar widget -----------------------------------------
+cat > src/ui/NotebookPanel.h <<'EOF'
+#pragma once
+
+#include <QWidget>
+#include <QString>
+#include <QStringList>
+#include <QList>
+
+class QListWidget;
+
+namespace ib {
+
+class Document;
+
+// OneNote-style navigation: a list of Sections (each grouping pages that share
+// a "section" label) above a list of the selected section's Pages. Drives the
+// document purely through its existing public API, so it never disturbs the
+// undo stack or the canvas.
+class NotebookPanel : public QWidget {
+    Q_OBJECT
+public:
+    explicit NotebookPanel(Document *doc, QWidget *parent = nullptr);
+
+private slots:
+    void rebuild();
+    void syncSelection();
+    void onSectionRowChanged();
+    void onPageRowChanged();
+    void addSection();
+    void renameSection();
+    void deleteSection();
+    void addPage();
+    void deletePage();
+
+private:
+    QStringList sectionOrder() const;
+    QList<int>  pagesInSection(const QString &name) const;
+    QString     selectedSectionName() const;
+    int         selectedPageIndex() const;
+    void        refreshPageList();
+    QString     uniqueSectionName(const QString &desired, const QString &except) const;
+    void        selectSectionRow(const QString &name);
+
+    Document    *m_doc = nullptr;
+    QListWidget *m_sectionList = nullptr;
+    QListWidget *m_pageList = nullptr;
+    bool         m_updating = false;
+};
+
+} // namespace ib
+EOF
+
+cat > src/ui/NotebookPanel.cpp <<'EOF'
+#include "ui/NotebookPanel.h"
+
+#include "model/Document.h"
+#include "model/Page.h"
+
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QListWidget>
+#include <QListWidgetItem>
+#include <QPushButton>
+#include <QLabel>
+#include <QFont>
+#include <QAbstractItemView>
+#include <QInputDialog>
+#include <QLineEdit>
+#include <QMessageBox>
+
+namespace ib {
+
+NotebookPanel::NotebookPanel(Document *doc, QWidget *parent)
+    : QWidget(parent), m_doc(doc)
+{
+    setMinimumWidth(200);
+
+    auto *root = new QVBoxLayout(this);
+    root->setContentsMargins(6, 6, 6, 6);
+    root->setSpacing(6);
+
+    auto *secHeader = new QLabel(tr("Sections"), this);
+    { QFont f = secHeader->font(); f.setBold(true); secHeader->setFont(f); }
+    root->addWidget(secHeader);
+
+    m_sectionList = new QListWidget(this);
+    m_sectionList->setSelectionMode(QAbstractItemView::SingleSelection);
+    root->addWidget(m_sectionList, 1);
+
+    auto *secBtns = new QHBoxLayout();
+    auto *secAdd = new QPushButton(tr("Add"), this);
+    auto *secRen = new QPushButton(tr("Rename"), this);
+    auto *secDel = new QPushButton(tr("Delete"), this);
+    secBtns->addWidget(secAdd);
+    secBtns->addWidget(secRen);
+    secBtns->addWidget(secDel);
+    root->addLayout(secBtns);
+
+    auto *pageHeader = new QLabel(tr("Pages"), this);
+    { QFont f = pageHeader->font(); f.setBold(true); pageHeader->setFont(f); }
+    root->addWidget(pageHeader);
+
+    m_pageList = new QListWidget(this);
+    m_pageList->setSelectionMode(QAbstractItemView::SingleSelection);
+    root->addWidget(m_pageList, 2);
+
+    auto *pageBtns = new QHBoxLayout();
+    auto *pageAdd = new QPushButton(tr("New Page"), this);
+    auto *pageDel = new QPushButton(tr("Delete"), this);
+    pageBtns->addWidget(pageAdd);
+    pageBtns->addWidget(pageDel);
+    root->addLayout(pageBtns);
+
+    connect(secAdd,  &QPushButton::clicked, this, &NotebookPanel::addSection);
+    connect(secRen,  &QPushButton::clicked, this, &NotebookPanel::renameSection);
+    connect(secDel,  &QPushButton::clicked, this, &NotebookPanel::deleteSection);
+    connect(pageAdd, &QPushButton::clicked, this, &NotebookPanel::addPage);
+    connect(pageDel, &QPushButton::clicked, this, &NotebookPanel::deletePage);
+
+    connect(m_sectionList, &QListWidget::currentRowChanged,
+            this, &NotebookPanel::onSectionRowChanged);
+    connect(m_pageList, &QListWidget::currentRowChanged,
+            this, &NotebookPanel::onPageRowChanged);
+
+    if (m_doc) {
+        connect(m_doc, &Document::pagesChanged, this, &NotebookPanel::rebuild);
+        connect(m_doc, &Document::currentPageChanged, this, &NotebookPanel::syncSelection);
+    }
+
+    rebuild();
+}
+
+QStringList NotebookPanel::sectionOrder() const
+{
+    QStringList out;
+    if (!m_doc) return out;
+    for (int i = 0; i < m_doc->pageCount(); ++i) {
+        const QString s = m_doc->page(i).section;
+        if (!out.contains(s))
+            out.append(s);
+    }
+    if (out.isEmpty())
+        out.append(QStringLiteral("Section 1"));
+    return out;
+}
+
+QList<int> NotebookPanel::pagesInSection(const QString &name) const
+{
+    QList<int> out;
+    if (!m_doc) return out;
+    for (int i = 0; i < m_doc->pageCount(); ++i)
+        if (m_doc->page(i).section == name)
+            out.append(i);
+    return out;
+}
+
+QString NotebookPanel::selectedSectionName() const
+{
+    QListWidgetItem *it = m_sectionList->currentItem();
+    return it ? it->text() : QString();
+}
+
+int NotebookPanel::selectedPageIndex() const
+{
+    QListWidgetItem *it = m_pageList->currentItem();
+    return it ? it->data(Qt::UserRole).toInt() : -1;
+}
+
+void NotebookPanel::rebuild()
+{
+    if (!m_doc) return;
+    m_updating = true;
+
+    QString keepSection;
+    const int cur = m_doc->currentIndex();
+    if (cur >= 0 && cur < m_doc->pageCount())
+        keepSection = m_doc->page(cur).section;
+
+    m_sectionList->clear();
+    const QStringList secs = sectionOrder();
+    for (const QString &s : secs)
+        m_sectionList->addItem(s);
+
+    int selRow = 0;
+    if (!keepSection.isEmpty()) {
+        const int found = secs.indexOf(keepSection);
+        if (found >= 0) selRow = found;
+    }
+    if (m_sectionList->count() > 0)
+        m_sectionList->setCurrentRow(selRow);
+
+    m_updating = false;
+    refreshPageList();
+}
+
+void NotebookPanel::refreshPageList()
+{
+    if (!m_doc) return;
+    m_updating = true;
+    m_pageList->clear();
+
+    const QString sec = selectedSectionName();
+    const QList<int> idxs = pagesInSection(sec);
+    const int cur = m_doc->currentIndex();
+
+    int rowToSelect = -1;
+    for (int n = 0; n < idxs.size(); ++n) {
+        const int gi = idxs[n];
+        const Page &pg = m_doc->page(gi);
+        QString hint;
+        if (pg.infinite)
+            hint = tr("Infinite");
+        else
+            hint = (pg.pageWidth <= pg.pageHeight) ? tr("Portrait") : tr("Landscape");
+        auto *item = new QListWidgetItem(tr("Page %1  -  %2").arg(n + 1).arg(hint));
+        item->setData(Qt::UserRole, gi);
+        m_pageList->addItem(item);
+        if (gi == cur) rowToSelect = n;
+    }
+    if (rowToSelect >= 0)
+        m_pageList->setCurrentRow(rowToSelect);
+
+    m_updating = false;
+}
+
+void NotebookPanel::syncSelection()
+{
+    if (!m_doc || m_updating) return;
+    const int cur = m_doc->currentIndex();
+    if (cur < 0 || cur >= m_doc->pageCount()) return;
+    const QString sec = m_doc->page(cur).section;
+
+    if (selectedSectionName() != sec) {
+        m_updating = true;
+        for (int r = 0; r < m_sectionList->count(); ++r) {
+            if (m_sectionList->item(r)->text() == sec) {
+                m_sectionList->setCurrentRow(r);
+                break;
+            }
+        }
+        m_updating = false;
+    }
+    refreshPageList();
+}
+
+void NotebookPanel::onSectionRowChanged()
+{
+    if (m_updating || !m_doc) return;
+    const QString sec = selectedSectionName();
+    if (sec.isEmpty()) return;
+    const QList<int> idxs = pagesInSection(sec);
+    if (!idxs.isEmpty())
+        m_doc->setCurrentIndex(idxs.first());
+    else
+        refreshPageList();
+}
+
+void NotebookPanel::onPageRowChanged()
+{
+    if (m_updating || !m_doc) return;
+    const int gi = selectedPageIndex();
+    if (gi >= 0 && gi < m_doc->pageCount())
+        m_doc->setCurrentIndex(gi);
+}
+
+QString NotebookPanel::uniqueSectionName(const QString &desired, const QString &except) const
+{
+    const QStringList existing = sectionOrder();
+    QString candidate = desired;
+    int n = 2;
+    while (existing.contains(candidate) && candidate != except)
+        candidate = QStringLiteral("%1 (%2)").arg(desired).arg(n++);
+    return candidate;
+}
+
+void NotebookPanel::selectSectionRow(const QString &name)
+{
+    for (int r = 0; r < m_sectionList->count(); ++r) {
+        if (m_sectionList->item(r)->text() == name) {
+            m_updating = true;
+            m_sectionList->setCurrentRow(r);
+            m_updating = false;
+            refreshPageList();
+            break;
+        }
+    }
+}
+
+void NotebookPanel::addSection()
+{
+    if (!m_doc) return;
+    const QString suggestion = tr("Section %1").arg(sectionOrder().size() + 1);
+    bool ok = false;
+    const QString input = QInputDialog::getText(this, tr("New Section"),
+        tr("Section name:"), QLineEdit::Normal, suggestion, &ok);
+    if (!ok) return;
+    const QString trimmed = input.trimmed();
+    const QString finalName = uniqueSectionName(trimmed.isEmpty() ? suggestion : trimmed,
+                                                QString());
+
+    m_doc->addPage();
+    const int gi = m_doc->currentIndex();
+    if (gi >= 0 && gi < m_doc->pageCount()) {
+        m_doc->page(gi).section = finalName;
+        m_doc->markChanged();
+    }
+    rebuild();
+    selectSectionRow(finalName);
+}
+
+void NotebookPanel::renameSection()
+{
+    if (!m_doc) return;
+    const QString oldName = selectedSectionName();
+    if (oldName.isEmpty()) return;
+    bool ok = false;
+    const QString input = QInputDialog::getText(this, tr("Rename Section"),
+        tr("Section name:"), QLineEdit::Normal, oldName, &ok);
+    if (!ok) return;
+    const QString trimmed = input.trimmed();
+    if (trimmed.isEmpty() || trimmed == oldName) return;
+    const QString finalName = uniqueSectionName(trimmed, oldName);
+
+    for (int i = 0; i < m_doc->pageCount(); ++i)
+        if (m_doc->page(i).section == oldName)
+            m_doc->page(i).section = finalName;
+    m_doc->markChanged();
+    rebuild();
+    selectSectionRow(finalName);
+}
+
+void NotebookPanel::deleteSection()
+{
+    if (!m_doc) return;
+    const QString sec = selectedSectionName();
+    if (sec.isEmpty()) return;
+    const QList<int> idxs = pagesInSection(sec);
+    if (idxs.isEmpty()) return;
+    if (idxs.size() >= m_doc->pageCount()) {
+        QMessageBox::information(this, tr("Delete Section"),
+            tr("This is the only section - it can't be deleted."));
+        return;
+    }
+    if (QMessageBox::question(this, tr("Delete Section"),
+            tr("Delete section \"%1\" and its %n page(s)?", nullptr,
+               static_cast<int>(idxs.size())).arg(sec))
+        != QMessageBox::Yes)
+        return;
+
+    for (int k = static_cast<int>(idxs.size()) - 1; k >= 0; --k)
+        m_doc->removePage(idxs[k]);
+    rebuild();
+}
+
+void NotebookPanel::addPage()
+{
+    if (!m_doc) return;
+    QString sec = selectedSectionName();
+    if (sec.isEmpty()) sec = QStringLiteral("Section 1");
+    m_doc->addPage();
+    const int gi = m_doc->currentIndex();
+    if (gi >= 0 && gi < m_doc->pageCount()) {
+        m_doc->page(gi).section = sec;
+        m_doc->markChanged();
+    }
+    rebuild();
+    selectSectionRow(sec);
+    for (int r = 0; r < m_pageList->count(); ++r) {
+        if (m_pageList->item(r)->data(Qt::UserRole).toInt() == gi) {
+            m_updating = true;
+            m_pageList->setCurrentRow(r);
+            m_updating = false;
+            break;
+        }
+    }
+}
+
+void NotebookPanel::deletePage()
+{
+    if (!m_doc) return;
+    const int gi = selectedPageIndex();
+    if (gi < 0 || gi >= m_doc->pageCount()) return;
+    if (m_doc->pageCount() <= 1) {
+        QMessageBox::information(this, tr("Delete Page"),
+            tr("The document must keep at least one page."));
+        return;
+    }
+    m_doc->removePage(gi);
+    rebuild();
+}
+
+} // namespace ib
+EOF
+
+# 4) Register the new widget with CMake (anchored, no rewrite) -----------------
+sed -i \
+  -e '/src\/ui\/PreferencesDialog\.cpp/a\    src/ui/NotebookPanel.cpp' \
+  -e '/src\/ui\/PreferencesDialog\.h/a\    src/ui/NotebookPanel.h' \
+  CMakeLists.txt
+
+# 5) Dock the panel into MainWindow (anchored includes + one-line dock) --------
+sed -i \
+  -e '/#include "ui\/PreferencesDialog\.h"/a #include "ui/NotebookPanel.h"\n#include <QDockWidget>' \
+  -e '/setCentralWidget(m_canvas);/a { QDockWidget *nbDock = new QDockWidget(tr("Notebook"), this); nbDock->setObjectName(QStringLiteral("notebookDock")); nbDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea); nbDock->setWidget(new NotebookPanel(m_doc, this)); addDockWidget(Qt::LeftDockWidgetArea, nbDock); }' \
+  src/ui/MainWindow.cpp
+
+log "PART 17 complete: notebook sections + pages sidebar (add/rename/delete sections, page create/delete, live two-way sync, per-page orientation hints; section persisted in .iboard, old files load unchanged)"
