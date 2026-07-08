@@ -1,0 +1,71 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+env:
+  QT_VERSION: 6.8.1
+  APP_NAME: Whiteboard
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout (gets setup.sh)
+        uses: actions/checkout@v4
+
+      # 1. Generate the whole project from setup.sh (bash ships with windows-latest via Git)
+      - name: Scaffold project
+        shell: bash
+        run: |
+          chmod +x setup.sh || true
+          bash setup.sh
+          echo "----- files after scaffold -----"
+          ls -R .
+
+      - name: Set up MSVC (x64)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: $ env.QT_VERSION 
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          cache: true
+          setup-python: false
+
+      - name: Configure (CMake + Ninja)
+        run: >
+          cmake -S . -B build
+          -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR"
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Deploy Qt runtime (windeployqt)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $exe = Get-ChildItem -Path build -Recurse -Filter "$env:APP_NAME.exe" | Select-Object -First 1
+          if (-not $exe) { Write-Error "Could not find $env:APP_NAME.exe under build/."; exit 1 }
+          Write-Host "Found exe: $($exe.FullName)"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item $exe.FullName -Destination dist\
+          & "$env:QT_ROOT_DIR\bin\windeployqt.exe" --release --dir dist --no-translations --compiler-runtime "dist\$env:APP_NAME.exe"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Whiteboard-windows-x64
+          path: dist/**
+          if-no-files-found: error
+          retention-days: 14
