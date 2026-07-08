@@ -1,103 +1,62 @@
-name: Windows EXE Release
+name: Build Windows EXE
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
-  build:
-    runs-on: windows-latest
-    
+  windows:
+    name: Windows x64 (MSVC)
+    runs-on: windows-2022
+
     steps:
-    - name: Checkout Code
-      uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Execute setup.sh to Generate C++ Architecture
-      shell: bash
-      run: |
-        if [ -f "setup.sh" ]; then
-          sed -i 's/\r$//' setup.sh
-          chmod +x setup.sh
-          ./setup.sh
-        fi
+      - name: Install Qt 6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.7.2'
+          host: windows
+          target: desktop
+          arch: win64_msvc2019_64
+          modules: 'qtpdf qtimageformats'
+          cache: true
 
-    - name: Install Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
+      - name: Configure (Visual Studio 2022, x64)
+        shell: pwsh
+        run: cmake -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release
 
-    - name: Install Ninja & aqtinstall
-      shell: pwsh
-      run: pip install ninja aqtinstall
+      - name: Build (Release)
+        shell: pwsh
+        run: cmake --build build --config Release --parallel
 
-    - name: Download & Install Qt 6.5.3
-      shell: pwsh
-      run: |
-        python -m aqt install-qt windows desktop 6.5.3 win64_msvc2019_64
+      - name: Deploy Qt runtime (windeployqt)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item "build/bin/Release/InkBoard.exe" "dist/"
+          windeployqt --release --compiler-runtime "dist/InkBoard.exe"
 
-    - name: Setup MSVC Developer Command Prompt
-      uses: ilammy/msvc-dev-cmd@v1
-      with:
-        arch: x64
+      - name: Build installer (NSIS)
+        shell: pwsh
+        run: |
+          choco install nsis -y --no-progress
+          & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" packaging/installer.nsi
 
-    - name: Inject C++20 MSVC Standard-Library Workaround
-      shell: pwsh
-      run: |
-        # Identify the target source directory (root or subdirectory)
-        $TargetDir = if (Test-Path "WhiteboardPro") { "WhiteboardPro" } else { "." }
-        $CMakePath = "$TargetDir/CMakeLists.txt"
-        
-        # Inject an MSVC preprocessor macro that bypasses the strict 'stdext' header error 
-        # by explicitly allowing non-permissive extension lookup for legacy library calls
-        if (Test-Path $CMakePath) {
-            (Get-Content $CMakePath) | ForEach-Object {
-                if ($_ -match "add_compile_options") {
-                    # Add /permissive option or append definition to fix stdext lookup issues in MSVC
-                    $_ -replace "/permissive-", "/permissive"
-                } else { $_ }
-            } | Set-Content $CMakePath
-            
-            # Append global definitions to make absolutely sure the compiler ignores stdext namespaces
-            Add-Content $CMakePath "`nadd_compile_definitions(_ALLOW_RTC_c_IN_STL _HAS_STDEXT=1)"
-        }
+      - name: Upload portable build (exe + Qt runtime)
+        uses: actions/upload-artifact@v4
+        with:
+          name: InkBoard-windows-portable
+          path: dist/**
+          if-no-files-found: error
 
-    - name: Configure CMake (Using Ninja)
-      shell: pwsh
-      run: |
-        $QT_DIR = "${{ github.workspace }}/6.5.3/msvc2019_64"
-        if (Test-Path "WhiteboardPro") { cd WhiteboardPro }
-        
-        cmake -B build -S . -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_DIR"
-
-    - name: Build Application
-      shell: pwsh
-      run: |
-        if (Test-Path "WhiteboardPro") { cd WhiteboardPro }
-        cmake --build build --config Release
-
-    - name: Package Dependencies (windeployqt)
-      shell: pwsh
-      run: |
-        $QT_DIR = "${{ github.workspace }}/6.5.3/msvc2019_64"
-        $ENV:PATH = "$QT_DIR/bin;" + $ENV:PATH
-        
-        mkdir deploy
-        
-        if (Test-Path "WhiteboardPro/build/WhiteboardPro.exe") {
-            copy WhiteboardPro/build/WhiteboardPro.exe deploy/
-        } elseif (Test-Path "build/WhiteboardPro.exe") {
-            copy build/WhiteboardPro.exe deploy/
-        } else {
-            Write-Error "Could not find WhiteboardPro.exe."
-            exit 1
-        }
-        
-        windeployqt --release --no-translations --no-opengl-sw deploy/WhiteboardPro.exe
-
-    - name: Upload Final EXE Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: WhiteboardPro-Windows-Standalone
-        path: deploy/
-        retention-days: 7
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: InkBoard-windows-installer
+          path: InkBoard-Setup.exe
+          if-no-files-found: error
