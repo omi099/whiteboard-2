@@ -2307,797 +2307,1140 @@ log "PART 3 complete: viewport, GPU canvas renderer, pointer fade FX, and pen/to
 # =============================================================================
 
 # =============================================================================
-#  PART 3  —  viewport transform, GPU canvas rendering, pen/touch input router
-#  Append below PART 2. Creates new files only.
+#  PART 4  —  tools: pen, highlighter, eraser, select, shapes, text, image, laser
+#  Append below PART 3. Creates new files only.
 # =============================================================================
-log "PART 3: writing viewport, renderer, canvas widget, and input router"
+log "PART 4: writing tool settings, tool base, tool manager, and all tools"
 
-# ---- render/Viewport.h -----------------------------------------------------
-cat > src/render/Viewport.h <<'EOF'
+# ---- tools/ToolSettings.h --------------------------------------------------
+cat > src/tools/ToolSettings.h <<'EOF'
 #pragma once
-#include <QPointF>
-#include <QRectF>
-#include <QSize>
-#include <QTransform>
-
-namespace ib::render {
-
-// Maps between infinite PAGE space and on-screen (logical) widget space.
-// Pure value type: pan (offset), zoom (scale), and optional rotation.
-class Viewport {
-public:
-    QPointF offset{0, 0};   // screen position of page origin (logical px)
-    double  scale = 1.0;    // page units -> screen px
-    double  rotation = 0.0; // radians (touch rotate gesture)
-
-    static constexpr double kMinScale = 0.05;
-    static constexpr double kMaxScale = 40.0;
-
-    QTransform core() const;          // rotation+scale (no translation)
-    QTransform pageToScreen() const;  // full transform
-    QTransform screenToPage() const { return pageToScreen().inverted(); }
-
-    QPointF toPage(const QPointF& s)   const { return screenToPage().map(s); }
-    QPointF toScreen(const QPointF& p) const { return pageToScreen().map(p); }
-
-    void panBy(const QPointF& deltaScreen) { offset += deltaScreen; }
-    void zoomAt(const QPointF& screenAnchor, double factor);
-    void rotateAt(const QPointF& screenAnchor, double deltaRad);
-
-    QRectF visiblePageRect(const QSize& widgetSize) const;
-    void fitTo(const QRectF& pageRect, const QSize& widgetSize, double margin = 40.0);
-};
-
-} // namespace ib::render
-EOF
-
-# ---- render/Viewport.cpp ---------------------------------------------------
-cat > src/render/Viewport.cpp <<'EOF'
-#include "render/Viewport.h"
-#include <QtGlobalStatic>
-#include <cmath>
-
-namespace ib::render {
-
-QTransform Viewport::core() const {
-    QTransform t;
-    t.rotateRadians(rotation);
-    t.scale(scale, scale);
-    return t;
-}
-
-QTransform Viewport::pageToScreen() const {
-    QTransform t;
-    t.translate(offset.x(), offset.y());
-    t.rotateRadians(rotation);
-    t.scale(scale, scale);
-    return t;
-}
-
-void Viewport::zoomAt(const QPointF& anchor, double factor) {
-    const QPointF pagePt = toPage(anchor);
-    scale = qBound(kMinScale, scale * factor, kMaxScale);
-    offset = anchor - core().map(pagePt);
-}
-
-void Viewport::rotateAt(const QPointF& anchor, double deltaRad) {
-    const QPointF pagePt = toPage(anchor);
-    rotation += deltaRad;
-    offset = anchor - core().map(pagePt);
-}
-
-QRectF Viewport::visiblePageRect(const QSize& s) const {
-    const QTransform inv = screenToPage();
-    QRectF r;
-    const QPointF c[4] = { inv.map(QPointF(0, 0)),      inv.map(QPointF(s.width(), 0)),
-                           inv.map(QPointF(0, s.height())), inv.map(QPointF(s.width(), s.height())) };
-    r = QRectF(c[0], c[0]);
-    for (const auto& p : c) {
-        r.setLeft(qMin(r.left(), p.x()));   r.setTop(qMin(r.top(), p.y()));
-        r.setRight(qMax(r.right(), p.x())); r.setBottom(qMax(r.bottom(), p.y()));
-    }
-    return r;
-}
-
-void Viewport::fitTo(const QRectF& pageRect, const QSize& s, double margin) {
-    if (pageRect.isEmpty() || s.isEmpty()) return;
-    rotation = 0.0;
-    const double sx = (s.width()  - 2 * margin) / pageRect.width();
-    const double sy = (s.height() - 2 * margin) / pageRect.height();
-    scale = qBound(kMinScale, qMin(sx, sy), kMaxScale);
-    const QPointF center = pageRect.center();
-    offset = QPointF(s.width() / 2.0, s.height() / 2.0) - core().map(center);
-}
-
-} // namespace ib::render
-EOF
-
-# ---- render/CanvasRenderer.h ----------------------------------------------
-cat > src/render/CanvasRenderer.h <<'EOF'
-#pragma once
-#include <QPainter>
-#include "render/Viewport.h"
+#include <QColor>
+#include <QFont>
+#include <QList>
+#include <QVector>
+#include "model/Enums.h"
 
 namespace ib {
-class Page;
-class Item;
-namespace render {
 
-// Stateless drawing of the vector document. The painter is transformed into
-// PAGE space, so all widths are page units and stay crisp at any zoom.
-class CanvasRenderer {
-public:
-    // Full page paint (background + all visible layers) clipped to widget rect.
-    static void paintPage(QPainter& p, const Page& page, const Viewport& vp,
-                          const QSize& widgetSize);
+// One shared, serializable bag of active-tool options. Deliberately lean:
+// each tool exposes only its essential settings.
+struct ToolSettings {
+    // Pen
+    QColor penColor = QColor(24, 24, 27);
+    double penSize = 3.0;
+    double penOpacity = 1.0;
+    bool   penPressureSize = true;
+    bool   penPressureOpacity = false;
+    double penSmoothing = 0.5;
 
-    // Paints one item; assumes painter is already in page space + antialiased.
-    static void paintItem(QPainter& p, const Item& item);
+    // Highlighter
+    QColor hlColor = QColor(255, 214, 10);
+    double hlSize = 16.0;
+    double hlOpacity = 0.35;
 
-private:
-    static void paintBackground(QPainter& p, const Page& page, const QRectF& visPage);
+    // Eraser
+    enum class EraserMode { Stroke, Area };
+    EraserMode eraserMode = EraserMode::Stroke;
+    double eraserRadius = 12.0;
+
+    // Select
+    bool selectLasso = false;   // false = rectangle marquee
+
+    // Shape
+    ShapeKind shapeKind = ShapeKind::Line;
+    QColor shapeColor = QColor(24, 24, 27);
+    double shapeWidth = 3.0;
+    bool   shapeFilled = false;
+    QColor shapeFill = QColor(0, 0, 0, 40);
+    bool   snapping = true;     // snap endpoints to grid + 45deg lines
+
+    // Text
+    QFont  textFont = QFont("Sans", 18);
+    QColor textColor = QColor(24, 24, 27);
+
+    // Laser
+    QColor laserColor = QColor(255, 45, 60);
+    double laserSize = 8.0;
+    int    laserTrailMs = 650;  // fading trail length in time
+
+    // Presets (color palette + quick sizes)
+    QList<QColor> palette {
+        QColor("#18181b"), QColor("#ef4444"), QColor("#f59e0b"),
+        QColor("#10b981"), QColor("#3b82f6"), QColor("#8b5cf6"),
+        QColor("#ec4899"), QColor("#ffffff")
+    };
+    QVector<double> sizePresets { 1.5, 3.0, 6.0, 12.0 };
 };
 
-} // namespace render
 } // namespace ib
 EOF
 
-# ---- render/CanvasRenderer.cpp --------------------------------------------
-cat > src/render/CanvasRenderer.cpp <<'EOF'
+# ---- tools/Tool.h ----------------------------------------------------------
+cat > src/tools/Tool.h <<'EOF'
+#pragma once
+#include <QCursor>
+#include <QPainter>
+#include "input/InputRouter.h"
+#include "render/Viewport.h"
+
+namespace ib {
+class ToolManager;
+class ICanvasHost;
+class Document;
+struct ToolSettings;
+
+// Base class for every interactive tool. Tools reach the document, viewport,
+// settings, and undo helpers through the owning ToolManager.
+class Tool {
+public:
+    explicit Tool(ToolManager* mgr) : m_mgr(mgr) {}
+    virtual ~Tool() = default;
+
+    virtual ToolId id() const = 0;
+    virtual void onBegin (const input::InputSample&) {}
+    virtual void onUpdate(const input::InputSample&) {}
+    virtual void onEnd   (const input::InputSample&) {}
+    virtual void onHover (const input::InputSample&, bool /*proximity*/) {}
+    virtual void paintOverlay(QPainter&, const render::Viewport&) {}
+    virtual void cancel() {}
+    virtual QCursor cursor() const { return QCursor(Qt::CrossCursor); }
+
+protected:
+    ICanvasHost*  host() const;
+    Document*     doc() const;
+    ToolSettings& settings() const;
+
+    ToolManager* m_mgr;
+};
+
+} // namespace ib
+EOF
+
+# ---- tools/ToolManager.h ---------------------------------------------------
+cat > src/tools/ToolManager.h <<'EOF'
+#pragma once
+#include <QTransform>
+#include <QUuid>
+#include <functional>
+#include <memory>
+#include <unordered_map>
+#include <vector>
+#include "model/Item.h"
+#include "tools/ToolSettings.h"
+
+namespace ib {
+class ICanvasHost;
+class Document;
+class Page;
+class Layer;
+class History;
+class Tool;
+class SelectTool;
+class TextItem;
+
+// Applies an affine transform to an item, per concrete type (keeps strokes
+// vector-crisp by rebuilding their cached path).
+void transformItem(Item& item, const QTransform& xf);
+
+// Owns tools + settings, dispatches normalized input, and centralizes all
+// undoable document edits so every tool stays tiny.
+class ToolManager {
+public:
+    explicit ToolManager(ICanvasHost* host);
+    ~ToolManager();
+
+    ToolSettings& settings() { return m_settings; }
+    ICanvasHost*  host() const { return m_host; }
+    Document*     doc() const;
+
+    void   setActiveTool(ToolId id);
+    ToolId activeTool() const { return m_activeId; }
+
+    // Dispatch from CanvasWidget.
+    void onDrawBegin (const input::InputSample& s);
+    void onDrawUpdate(const input::InputSample& s);
+    void onDrawEnd   (const input::InputSample& s);
+    void onHover     (const input::InputSample& s, bool proximity);
+    void paintOverlay(QPainter& p, const render::Viewport& vp);
+    QCursor currentCursor() const;
+
+    // Convenience for menus / shortcuts.
+    void undo();
+    void redo();
+    void deleteSelection();
+    void copySelection();
+    void paste();
+    void selectAll();
+    void insertImageAtCenter(const class QImage& img);
+    void setTextEditRequester(std::function<void(TextItem*)> cb) { m_editText = std::move(cb); }
+    std::function<void(TextItem*)> textEditRequester() const { return m_editText; }
+
+    // Undoable primitives used by tools.
+    Layer&  activeLayer();
+    Page&   activePage();
+    History& history();
+    void commitAdd(ItemPtr item);
+    void commitRemove(const std::vector<QUuid>& ids);
+    void commitTransform(const std::vector<QUuid>& ids, const QTransform& xf);
+
+    Item* findItem(const QUuid& id);
+
+private:
+    ICanvasHost* m_host;
+    ToolSettings m_settings;
+    std::unordered_map<int, std::unique_ptr<Tool>> m_tools;
+    ToolId m_activeId = ToolId::Pen;
+    Tool*  m_strokeTool = nullptr;         // tool that owns the in-flight stroke
+    SelectTool* m_select = nullptr;
+    std::vector<ItemPtr> m_clipboard;
+    std::function<void(TextItem*)> m_editText;
+
+    Tool* toolFor(ToolId id);
+};
+
+} // namespace ib
+EOF
+
+# ---- tools/PenTool.h (+ shared InkStrokeTool) -----------------------------
+cat > src/tools/PenTool.h <<'EOF'
+#pragma once
+#include <memory>
+#include "tools/Tool.h"
+#include "model/StrokeItem.h"
+
+namespace ib {
+
+// Shared implementation for pressure-driven ink tools.
+class InkStrokeTool : public Tool {
+public:
+    using Tool::Tool;
+    void onBegin (const input::InputSample& s) override;
+    void onUpdate(const input::InputSample& s) override;
+    void onEnd   (const input::InputSample& s) override;
+    void cancel() override;
+    void paintOverlay(QPainter& p, const render::Viewport& vp) override;
+    QCursor cursor() const override { return QCursor(Qt::CrossCursor); }
+
+protected:
+    virtual std::unique_ptr<StrokeItem> makeStroke() const = 0;
+    std::unique_ptr<StrokeItem> m_live;
+};
+
+class PenTool final : public InkStrokeTool {
+public:
+    using InkStrokeTool::InkStrokeTool;
+    ToolId id() const override { return ToolId::Pen; }
+protected:
+    std::unique_ptr<StrokeItem> makeStroke() const override;
+};
+
+} // namespace ib
+EOF
+
+# ---- tools/PenTool.cpp -----------------------------------------------------
+cat > src/tools/PenTool.cpp <<'EOF'
+#include "tools/PenTool.h"
+#include "tools/ToolManager.h"
 #include "render/CanvasRenderer.h"
+
+namespace ib {
+
+void InkStrokeTool::onBegin(const input::InputSample& s) {
+    m_live = makeStroke();
+    StrokePoint p; p.pos = s.pagePos; p.pressure = s.pressure;
+    p.tiltX = s.tiltX; p.tiltY = s.tiltY; p.tMs = s.tMs;
+    m_live->addPoint(p);
+    if (host()) host()->requestRepaint();
+}
+
+void InkStrokeTool::onUpdate(const input::InputSample& s) {
+    if (!m_live) return;
+    StrokePoint p; p.pos = s.pagePos; p.pressure = s.pressure;
+    p.tiltX = s.tiltX; p.tiltY = s.tiltY; p.tMs = s.tMs;
+    m_live->addPoint(p);
+    if (host()) host()->requestRepaint();
+}
+
+void InkStrokeTool::onEnd(const input::InputSample& s) {
+    if (!m_live) return;
+    onUpdate(s);
+    if (m_live->points().size() >= 1) {
+        m_live->finalize();
+        m_mgr->commitAdd(std::move(m_live));
+    }
+    m_live.reset();
+    if (host()) host()->requestRepaint();
+}
+
+void InkStrokeTool::cancel() { m_live.reset(); if (host()) host()->requestRepaint(); }
+
+void InkStrokeTool::paintOverlay(QPainter& p, const render::Viewport& vp) {
+    if (!m_live) return;
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setTransform(vp.pageToScreen());
+    render::CanvasRenderer::paintItem(p, *m_live);
+    p.restore();
+}
+
+std::unique_ptr<StrokeItem> PenTool::makeStroke() const {
+    auto s = std::make_unique<StrokeItem>();
+    const ToolSettings& t = settings();
+    s->kind = InkKind::Pen;
+    s->color = t.penColor;
+    s->baseWidth = t.penSize;
+    s->opacity = t.penOpacity;
+    s->pressureToWidth = t.penPressureSize;
+    s->pressureToOpacity = t.penPressureOpacity;
+    s->smoothing = t.penSmoothing;
+    return s;
+}
+
+} // namespace ib
+EOF
+
+# ---- tools/HighlighterTool.h / .cpp ---------------------------------------
+cat > src/tools/HighlighterTool.h <<'EOF'
+#pragma once
+#include "tools/PenTool.h"
+namespace ib {
+class HighlighterTool final : public InkStrokeTool {
+public:
+    using InkStrokeTool::InkStrokeTool;
+    ToolId id() const override { return ToolId::Highlighter; }
+protected:
+    std::unique_ptr<StrokeItem> makeStroke() const override;
+};
+} // namespace ib
+EOF
+
+cat > src/tools/HighlighterTool.cpp <<'EOF'
+#include "tools/HighlighterTool.h"
+namespace ib {
+std::unique_ptr<StrokeItem> HighlighterTool::makeStroke() const {
+    auto s = std::make_unique<StrokeItem>();
+    const ToolSettings& t = settings();
+    s->kind = InkKind::Highlighter;
+    s->color = t.hlColor;
+    s->baseWidth = t.hlSize;
+    s->opacity = t.hlOpacity;
+    s->pressureToWidth = false;   // highlighters read best at constant width
+    s->pressureToOpacity = false;
+    s->smoothing = 0.4;
+    return s;
+}
+} // namespace ib
+EOF
+
+# ---- tools/EraserTool.h / .cpp --------------------------------------------
+cat > src/tools/EraserTool.h <<'EOF'
+#pragma once
+#include <QPointF>
+#include <QUuid>
+#include <vector>
+#include "tools/Tool.h"
+
+namespace ib {
+// Stroke eraser (removes whole items it touches) and area eraser (larger
+// brush). Also invoked automatically when the pen's eraser end is used.
+class EraserTool final : public Tool {
+public:
+    using Tool::Tool;
+    ToolId id() const override { return ToolId::Eraser; }
+    void onBegin (const input::InputSample& s) override;
+    void onUpdate(const input::InputSample& s) override;
+    void onEnd   (const input::InputSample& s) override;
+    void cancel() override;
+    void onHover (const input::InputSample& s, bool) override;
+    void paintOverlay(QPainter& p, const render::Viewport& vp) override;
+    QCursor cursor() const override { return QCursor(Qt::BlankCursor); }
+private:
+    void eraseAt(const QPointF& pagePos);
+    double radius() const;
+    std::vector<QUuid> m_pending;
+    QPointF m_cursorPage;
+    bool m_active = false;
+};
+} // namespace ib
+EOF
+
+cat > src/tools/EraserTool.cpp <<'EOF'
+#include "tools/EraserTool.h"
+#include "tools/ToolManager.h"
+#include "model/Document.h"
 #include "model/Page.h"
+
+namespace ib {
+
+double EraserTool::radius() const {
+    const ToolSettings& t = settings();
+    return t.eraserMode == ToolSettings::EraserMode::Area ? t.eraserRadius * 2.2 : t.eraserRadius;
+}
+
+void EraserTool::eraseAt(const QPointF& pos) {
+    Layer& layer = m_mgr->activeLayer();
+    const double r = radius();
+    for (const auto& it : layer.items) {
+        if (it->hitTest(pos, r)) {
+            const QUuid id = it->id();
+            if (std::find(m_pending.begin(), m_pending.end(), id) == m_pending.end())
+                m_pending.push_back(id);
+        }
+    }
+    if (host()) host()->requestRepaint();
+}
+
+void EraserTool::onBegin(const input::InputSample& s) {
+    m_active = true; m_pending.clear(); m_cursorPage = s.pagePos; eraseAt(s.pagePos);
+}
+void EraserTool::onUpdate(const input::InputSample& s) { m_cursorPage = s.pagePos; if (m_active) eraseAt(s.pagePos); }
+void EraserTool::onEnd(const input::InputSample& s) {
+    m_cursorPage = s.pagePos; m_active = false;
+    if (!m_pending.empty()) { m_mgr->commitRemove(m_pending); m_pending.clear(); }
+}
+void EraserTool::cancel() { m_active = false; m_pending.clear(); }
+void EraserTool::onHover(const input::InputSample& s, bool) { m_cursorPage = s.pagePos; if (host()) host()->requestRepaint(); }
+
+void EraserTool::paintOverlay(QPainter& p, const render::Viewport& vp) {
+    p.save();
+    const QPointF c = vp.toScreen(m_cursorPage);
+    const double r = radius() * vp.scale;
+    QPen pen(QColor(120, 120, 120)); pen.setWidthF(1.0);
+    p.setPen(pen); p.setBrush(QColor(160, 160, 160, 40));
+    p.drawEllipse(c, r, r);
+    p.restore();
+}
+
+} // namespace ib
+EOF
+
+# ---- tools/ShapeTool.h / .cpp ---------------------------------------------
+cat > src/tools/ShapeTool.h <<'EOF'
+#pragma once
+#include <memory>
+#include "tools/Tool.h"
+#include "model/ShapeItem.h"
+namespace ib {
+class ShapeTool final : public Tool {
+public:
+    using Tool::Tool;
+    ToolId id() const override { return ToolId::Shape; }
+    void onBegin (const input::InputSample& s) override;
+    void onUpdate(const input::InputSample& s) override;
+    void onEnd   (const input::InputSample& s) override;
+    void cancel() override;
+    void paintOverlay(QPainter& p, const render::Viewport& vp) override;
+private:
+    QPointF snap(const QPointF& p) const;
+    std::unique_ptr<ShapeItem> m_live;
+    QPointF m_start;
+};
+} // namespace ib
+EOF
+
+cat > src/tools/ShapeTool.cpp <<'EOF'
+#include "tools/ShapeTool.h"
+#include "tools/ToolManager.h"
+#include "render/CanvasRenderer.h"
+#include "model/Document.h"
+#include "model/Page.h"
+#include <cmath>
+
+namespace ib {
+
+QPointF ShapeTool::snap(const QPointF& p) const {
+    if (!settings().snapping) return p;
+    const double g = qMax(2.0, m_mgr->activePage().gridSpacing);
+    return QPointF(std::round(p.x() / g) * g, std::round(p.y() / g) * g);
+}
+
+void ShapeTool::onBegin(const input::InputSample& s) {
+    m_live = std::make_unique<ShapeItem>();
+    m_live->shape = settings().shapeKind;
+    m_live->strokeColor = settings().shapeColor;
+    m_live->strokeWidth = settings().shapeWidth;
+    m_live->filled = settings().shapeFilled;
+    m_live->fillColor = settings().shapeFill;
+    m_start = snap(s.pagePos);
+    m_live->p1 = m_start; m_live->p2 = m_start;
+    if (host()) host()->requestRepaint();
+}
+
+void ShapeTool::onUpdate(const input::InputSample& s) {
+    if (!m_live) return;
+    QPointF end = snap(s.pagePos);
+    // 45-degree constraint for line/arrow when snapping is on.
+    if (settings().snapping &&
+        (m_live->shape == ShapeKind::Line || m_live->shape == ShapeKind::Arrow)) {
+        const double dx = end.x() - m_start.x(), dy = end.y() - m_start.y();
+        const double a = std::atan2(dy, dx);
+        const double step = M_PI / 4.0;
+        const double snapped = std::round(a / step) * step;
+        const double len = std::hypot(dx, dy);
+        if (std::abs(std::remainder(a, step)) < 0.20)
+            end = m_start + QPointF(std::cos(snapped), std::sin(snapped)) * len;
+    }
+    m_live->p2 = end;
+    if (host()) host()->requestRepaint();
+}
+
+void ShapeTool::onEnd(const input::InputSample& s) {
+    if (!m_live) return;
+    onUpdate(s);
+    if (QLineF(m_live->p1, m_live->p2).length() > 0.5)
+        m_mgr->commitAdd(std::move(m_live));
+    m_live.reset();
+    if (host()) host()->requestRepaint();
+}
+
+void ShapeTool::cancel() { m_live.reset(); if (host()) host()->requestRepaint(); }
+
+void ShapeTool::paintOverlay(QPainter& p, const render::Viewport& vp) {
+    if (!m_live) return;
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setTransform(vp.pageToScreen());
+    render::CanvasRenderer::paintItem(p, *m_live);
+    p.restore();
+}
+
+} // namespace ib
+EOF
+
+# ---- tools/TextTool.h / .cpp ----------------------------------------------
+cat > src/tools/TextTool.h <<'EOF'
+#pragma once
+#include "tools/Tool.h"
+namespace ib {
+class TextTool final : public Tool {
+public:
+    using Tool::Tool;
+    ToolId id() const override { return ToolId::Text; }
+    void onEnd(const input::InputSample& s) override;
+    QCursor cursor() const override { return QCursor(Qt::IBeamCursor); }
+};
+} // namespace ib
+EOF
+
+cat > src/tools/TextTool.cpp <<'EOF'
+#include "tools/TextTool.h"
+#include "tools/ToolManager.h"
+#include "model/TextItem.h"
+
+namespace ib {
+void TextTool::onEnd(const input::InputSample& s) {
+    auto t = std::make_unique<TextItem>();
+    t->pos = s.pagePos;
+    t->font = settings().textFont;
+    t->color = settings().textColor;
+    t->text = QString();
+    TextItem* raw = t.get();
+    m_mgr->commitAdd(std::move(t));
+    if (auto cb = m_mgr->textEditRequester()) cb(raw);  // MainWindow opens editor
+    if (host()) host()->requestRepaint();
+}
+} // namespace ib
+EOF
+
+# ---- tools/ImageTool.h / .cpp ---------------------------------------------
+cat > src/tools/ImageTool.h <<'EOF'
+#pragma once
+#include <QImage>
+#include "tools/Tool.h"
+namespace ib {
+class ImageTool final : public Tool {
+public:
+    using Tool::Tool;
+    ToolId id() const override { return ToolId::Image; }
+    void setPending(const QImage& img) { m_pending = img; }
+    void onEnd(const input::InputSample& s) override;
+private:
+    QImage m_pending;
+};
+} // namespace ib
+EOF
+
+cat > src/tools/ImageTool.cpp <<'EOF'
+#include "tools/ImageTool.h"
+#include "tools/ToolManager.h"
+#include "model/ImageItem.h"
+
+namespace ib {
+void ImageTool::onEnd(const input::InputSample& s) {
+    if (m_pending.isNull()) return;
+    auto im = std::make_unique<ImageItem>();
+    im->image = m_pending;
+    const double w = m_pending.width(), h = m_pending.height();
+    im->rect = QRectF(s.pagePos, QSizeF(w, h));
+    m_mgr->commitAdd(std::move(im));
+    m_pending = QImage();
+    if (host()) host()->requestRepaint();
+}
+} // namespace ib
+EOF
+
+# ---- tools/LaserTool.h / .cpp ---------------------------------------------
+cat > src/tools/LaserTool.h <<'EOF'
+#pragma once
+#include <QTimer>
+#include <QPointF>
+#include <deque>
+#include "tools/Tool.h"
+namespace ib {
+// Ephemeral pointer: never persists to the document. Leaves a time-based
+// fading trail and auto-vanishes when the pen leaves proximity.
+class LaserTool final : public Tool {
+public:
+    explicit LaserTool(ToolManager* mgr);
+    ToolId id() const override { return ToolId::Laser; }
+    void onBegin (const input::InputSample& s) override;
+    void onUpdate(const input::InputSample& s) override;
+    void onEnd   (const input::InputSample& s) override;
+    void onHover (const input::InputSample& s, bool proximity) override;
+    void paintOverlay(QPainter& p, const render::Viewport& vp) override;
+    QCursor cursor() const override { return QCursor(Qt::BlankCursor); }
+private:
+    struct Dot { QPointF page; qint64 t; };
+    void push(const QPointF& page, qint64 t);
+    void prune();
+    std::deque<Dot> m_trail;
+    QPointF m_headPage;
+    bool m_headVisible = false;
+    QTimer m_timer;
+};
+} // namespace ib
+EOF
+
+cat > src/tools/LaserTool.cpp <<'EOF'
+#include "tools/LaserTool.h"
+#include "tools/ToolManager.h"
+#include "render/ICanvasHost.h"
+#include <QDateTime>
+#include <QWidget>
+
+namespace ib {
+
+LaserTool::LaserTool(ToolManager* mgr) : Tool(mgr) {
+    m_timer.setInterval(16);
+    QObject::connect(&m_timer, &QTimer::timeout, host() ? host()->asWidget() : nullptr, [this]{
+        prune();
+        if (host()) host()->requestRepaint();
+        if (m_trail.empty() && !m_headVisible) m_timer.stop();
+    });
+}
+
+void LaserTool::push(const QPointF& page, qint64 t) {
+    m_trail.push_back({page, t});
+    m_headPage = page; m_headVisible = true;
+    if (!m_timer.isActive()) m_timer.start();
+}
+
+void LaserTool::prune() {
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const qint64 life = settings().laserTrailMs;
+    while (!m_trail.empty() && now - m_trail.front().t > life) m_trail.pop_front();
+}
+
+void LaserTool::onBegin(const input::InputSample& s)  { push(s.pagePos, s.tMs); }
+void LaserTool::onUpdate(const input::InputSample& s) { push(s.pagePos, s.tMs); }
+void LaserTool::onEnd(const input::InputSample&)      { m_headVisible = false; }
+void LaserTool::onHover(const input::InputSample& s, bool proximity) {
+    m_headVisible = proximity;
+    if (proximity) { m_headPage = s.pagePos; if (!m_timer.isActive()) m_timer.start(); }
+}
+
+void LaserTool::paintOverlay(QPainter& p, const render::Viewport& vp) {
+    prune();
+    if (m_trail.empty() && !m_headVisible) return;
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setPen(Qt::NoPen);
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const double life = qMax(1, settings().laserTrailMs);
+    const double baseR = settings().laserSize;
+    for (const auto& d : m_trail) {
+        const double age = double(now - d.t) / life;
+        const double a = qBound(0.0, 1.0 - age, 1.0);
+        if (a <= 0.01) continue;
+        QColor c = settings().laserColor; c.setAlphaF(0.45 * a);
+        const QPointF sp = vp.toScreen(d.page);
+        p.setBrush(c);
+        p.drawEllipse(sp, baseR * (0.5 + 0.5 * a), baseR * (0.5 + 0.5 * a));
+    }
+    if (m_headVisible) {
+        const QPointF sp = vp.toScreen(m_headPage);
+        QColor glow = settings().laserColor; glow.setAlphaF(0.28);
+        p.setBrush(glow); p.drawEllipse(sp, baseR * 1.8, baseR * 1.8);
+        QColor core = settings().laserColor; core.setAlphaF(0.95);
+        p.setBrush(core); p.drawEllipse(sp, baseR, baseR);
+    }
+    p.restore();
+}
+
+} // namespace ib
+EOF
+
+# ---- tools/SelectTool.h / .cpp --------------------------------------------
+cat > src/tools/SelectTool.h <<'EOF'
+#pragma once
+#include <QPolygonF>
+#include <QRectF>
+#include <QUuid>
+#include <vector>
+#include "tools/Tool.h"
+
+namespace ib {
+// Lasso/rectangle selection with move, uniform scale (corner handles), rotate
+// (top handle), and delete/copy/paste (driven by ToolManager).
+class SelectTool final : public Tool {
+public:
+    using Tool::Tool;
+    ToolId id() const override { return ToolId::Select; }
+    void onBegin (const input::InputSample& s) override;
+    void onUpdate(const input::InputSample& s) override;
+    void onEnd   (const input::InputSample& s) override;
+    void cancel() override;
+    void paintOverlay(QPainter& p, const render::Viewport& vp) override;
+    QCursor cursor() const override { return QCursor(Qt::ArrowCursor); }
+
+    const std::vector<QUuid>& selection() const { return m_selected; }
+    void setSelection(std::vector<QUuid> ids) { m_selected = std::move(ids); }
+    void clearSelection() { m_selected.clear(); }
+    QRectF selectionBounds() const;
+
+private:
+    enum class Phase { None, Marquee, Move, Scale, Rotate };
+    double handlePx() const { return 9.0; }
+    void computeSelection(const QRectF& rect, const QPolygonF& lasso, bool lassoMode);
+
+    Phase m_phase = Phase::None;
+    std::vector<QUuid> m_selected;
+    QRectF m_marquee;
+    QPolygonF m_lasso;
+    QPointF m_start, m_last;
+    QPointF m_scaleAnchor, m_rotCenter;
+    double  m_startDist = 1.0, m_startAngle = 0.0;
+    QTransform m_preview;
+};
+} // namespace ib
+EOF
+
+cat > src/tools/SelectTool.cpp <<'EOF'
+#include "tools/SelectTool.h"
+#include "tools/ToolManager.h"
+#include "render/CanvasRenderer.h"
+#include "model/Document.h"
+#include "model/Page.h"
+#include <cmath>
+
+namespace ib {
+
+QRectF SelectTool::selectionBounds() const {
+    QRectF r;
+    for (const QUuid& id : m_selected)
+        if (Item* it = m_mgr->findItem(id))
+            r = r.isNull() ? it->boundingRect() : r.united(it->boundingRect());
+    return r;
+}
+
+void SelectTool::computeSelection(const QRectF& rect, const QPolygonF& lasso, bool lassoMode) {
+    m_selected.clear();
+    Layer& layer = m_mgr->activeLayer();
+    for (const auto& it : layer.items) {
+        const QRectF b = it->boundingRect();
+        const bool hit = lassoMode ? lasso.containsPoint(b.center(), Qt::OddEvenFill)
+                                   : rect.intersects(b);
+        if (hit) m_selected.push_back(it->id());
+    }
+}
+
+void SelectTool::onBegin(const input::InputSample& s) {
+    const QPointF pg = s.pagePos;
+    m_start = m_last = pg;
+    m_preview = QTransform();
+    const double tolPage = handlePx() / qMax(0.001, host()->viewport().scale);
+
+    if (!m_selected.empty()) {
+        const QRectF b = selectionBounds();
+        // corner handles -> scale
+        const QPointF corners[4] = { b.topLeft(), b.topRight(), b.bottomRight(), b.bottomLeft() };
+        for (int i = 0; i < 4; ++i) {
+            if (QLineF(pg, corners[i]).length() <= tolPage * 1.5) {
+                m_phase = Phase::Scale;
+                m_scaleAnchor = corners[(i + 2) % 4];
+                m_startDist = qMax(1.0, QLineF(m_scaleAnchor, pg).length());
+                return;
+            }
+        }
+        // rotate handle above top-center
+        const QPointF rotHandle = QPointF(b.center().x(), b.top() - tolPage * 3.0);
+        if (QLineF(pg, rotHandle).length() <= tolPage * 1.5) {
+            m_phase = Phase::Rotate;
+            m_rotCenter = b.center();
+            m_startAngle = std::atan2(pg.y() - m_rotCenter.y(), pg.x() - m_rotCenter.x());
+            return;
+        }
+        if (b.contains(pg)) { m_phase = Phase::Move; return; }
+    }
+
+    // start a new marquee/lasso
+    m_phase = Phase::Marquee;
+    m_marquee = QRectF(pg, pg);
+    m_lasso.clear(); m_lasso << pg;
+}
+
+void SelectTool::onUpdate(const input::InputSample& s) {
+    const QPointF pg = s.pagePos;
+    switch (m_phase) {
+    case Phase::Marquee:
+        m_marquee = QRectF(m_start, pg).normalized();
+        m_lasso << pg;
+        break;
+    case Phase::Move:
+        m_preview = QTransform::fromTranslate(pg.x() - m_start.x(), pg.y() - m_start.y());
+        break;
+    case Phase::Scale: {
+        const double d = qMax(1.0, QLineF(m_scaleAnchor, pg).length());
+        const double f = qBound(0.05, d / m_startDist, 40.0);
+        m_preview = QTransform();
+        m_preview.translate(m_scaleAnchor.x(), m_scaleAnchor.y());
+        m_preview.scale(f, f);
+        m_preview.translate(-m_scaleAnchor.x(), -m_scaleAnchor.y());
+        break;
+    }
+    case Phase::Rotate: {
+        const double a = std::atan2(pg.y() - m_rotCenter.y(), pg.x() - m_rotCenter.x());
+        const double da = a - m_startAngle;
+        m_preview = QTransform();
+        m_preview.translate(m_rotCenter.x(), m_rotCenter.y());
+        m_preview.rotateRadians(da);
+        m_preview.translate(-m_rotCenter.x(), -m_rotCenter.y());
+        break;
+    }
+    default: break;
+    }
+    m_last = pg;
+    if (host()) host()->requestRepaint();
+}
+
+void SelectTool::onEnd(const input::InputSample&) {
+    switch (m_phase) {
+    case Phase::Marquee:
+        computeSelection(m_marquee, m_lasso, settings().selectLasso);
+        break;
+    case Phase::Move:
+    case Phase::Scale:
+    case Phase::Rotate:
+        if (!m_preview.isIdentity() && !m_selected.empty())
+            m_mgr->commitTransform(m_selected, m_preview);
+        break;
+    default: break;
+    }
+    m_preview = QTransform();
+    m_phase = Phase::None;
+    if (host()) host()->requestRepaint();
+}
+
+void SelectTool::cancel() { m_phase = Phase::None; m_preview = QTransform(); }
+
+void SelectTool::paintOverlay(QPainter& p, const render::Viewport& vp) {
+    p.save();
+    // marquee (screen space)
+    if (m_phase == Phase::Marquee) {
+        QPen pen(QColor(60, 90, 254)); pen.setStyle(Qt::DashLine); pen.setWidthF(1.0);
+        p.setPen(pen); p.setBrush(QColor(60, 90, 254, 28));
+        if (settings().selectLasso) {
+            QPolygonF poly;
+            for (const QPointF& pt : m_lasso) poly << vp.toScreen(pt);
+            p.drawPolygon(poly);
+        } else {
+            p.drawRect(QRectF(vp.toScreen(m_marquee.topLeft()), vp.toScreen(m_marquee.bottomRight())));
+        }
+    }
+
+    if (!m_selected.empty()) {
+        // live preview of the transformed items (ghost)
+        if (!m_preview.isIdentity()) {
+            p.save();
+            p.setRenderHint(QPainter::Antialiasing, true);
+            p.setTransform(vp.pageToScreen());
+            p.setOpacity(0.75);
+            for (const QUuid& id : m_selected)
+                if (Item* it = m_mgr->findItem(id)) {
+                    auto ghost = it->clone();
+                    transformItem(*ghost, m_preview);
+                    render::CanvasRenderer::paintItem(p, *ghost);
+                }
+            p.restore();
+        }
+
+        // bounding box + handles (screen space, mapped through preview)
+        QRectF b = selectionBounds();
+        const QPointF c[4] = {
+            vp.toScreen(m_preview.map(b.topLeft())),  vp.toScreen(m_preview.map(b.topRight())),
+            vp.toScreen(m_preview.map(b.bottomRight())), vp.toScreen(m_preview.map(b.bottomLeft())) };
+        QPen pen(QColor(60, 90, 254)); pen.setWidthF(1.5);
+        p.setPen(pen); p.setBrush(Qt::NoBrush);
+        QPolygonF box; box << c[0] << c[1] << c[2] << c[3];
+        p.drawPolygon(box);
+        p.setBrush(QColor(255, 255, 255));
+        for (const QPointF& h : c) p.drawRect(QRectF(h - QPointF(4, 4), QSizeF(8, 8)));
+        // rotate handle
+        const QPointF top = (c[0] + c[1]) / 2.0;
+        const QPointF rot = top + QPointF(0, -22);
+        p.drawLine(top, rot);
+        p.drawEllipse(rot, 5, 5);
+    }
+    p.restore();
+}
+
+} // namespace ib
+EOF
+
+# ---- tools/ToolManager.cpp -------------------------------------------------
+cat > src/tools/ToolManager.cpp <<'EOF'
+#include "tools/ToolManager.h"
+#include "tools/Tool.h"
+#include "tools/PenTool.h"
+#include "tools/HighlighterTool.h"
+#include "tools/EraserTool.h"
+#include "tools/SelectTool.h"
+#include "tools/ShapeTool.h"
+#include "tools/TextTool.h"
+#include "tools/ImageTool.h"
+#include "tools/LaserTool.h"
+#include "render/ICanvasHost.h"
+#include "model/Document.h"
+#include "model/Page.h"
+#include "model/History.h"
 #include "model/StrokeItem.h"
 #include "model/ShapeItem.h"
 #include "model/TextItem.h"
 #include "model/ImageItem.h"
-#include "ink/Tessellator.h"
-#include <QtMath>
+#include <QImage>
+#include <algorithm>
+#include <cmath>
+#include <memory>
 
-namespace ib::render {
+namespace ib {
 
-void CanvasRenderer::paintBackground(QPainter& p, const Page& page, const QRectF& vis) {
-    if (page.background == BackgroundKind::Blank) return;
-    QPen pen(page.gridColor);
-    pen.setCosmetic(true);          // 1px lines regardless of zoom
-    pen.setWidthF(1.0);
-    p.setPen(pen);
-    const double g = qMax(2.0, page.gridSpacing);
-    const double x0 = std::floor(vis.left() / g) * g;
-    const double y0 = std::floor(vis.top()  / g) * g;
+// -------- Tool base accessors (need full ToolManager) ----------------------
+ICanvasHost*  Tool::host() const     { return m_mgr->host(); }
+Document*     Tool::doc() const      { return m_mgr->doc(); }
+ToolSettings& Tool::settings() const { return m_mgr->settings(); }
 
-    if (page.background == BackgroundKind::Grid || page.background == BackgroundKind::Lines) {
-        for (double y = y0; y <= vis.bottom(); y += g)
-            p.drawLine(QPointF(vis.left(), y), QPointF(vis.right(), y));
-        if (page.background == BackgroundKind::Grid)
-            for (double x = x0; x <= vis.right(); x += g)
-                p.drawLine(QPointF(x, vis.top()), QPointF(x, vis.bottom()));
-    } else if (page.background == BackgroundKind::Dots) {
-        p.setBrush(page.gridColor);
-        p.setPen(Qt::NoPen);
-        for (double y = y0; y <= vis.bottom(); y += g)
-            for (double x = x0; x <= vis.right(); x += g)
-                p.drawEllipse(QPointF(x, y), 1.2, 1.2);
-    }
-}
-
-void CanvasRenderer::paintItem(QPainter& p, const Item& item) {
+// -------- transformItem ----------------------------------------------------
+void transformItem(Item& item, const QTransform& xf) {
     switch (item.type()) {
     case ItemType::Stroke: {
-        const auto& s = static_cast<const StrokeItem&>(item);
-        p.save();
-        p.setPen(Qt::NoPen);
-        QColor c = s.color;
-        p.setOpacity(qBound(0.0, s.opacity, 1.0));
-        if (s.kind == InkKind::Highlighter)
-            p.setCompositionMode(QPainter::CompositionMode_Multiply);
-        p.setBrush(c);
-        p.drawPath(ink::buildRibbon(s.points(), s.baseWidth, s.pressureToWidth));
-        p.restore();
+        auto& s = static_cast<StrokeItem&>(item);
+        for (auto& p : s.points()) p.pos = xf.map(p.pos);
+        const double sm = s.smoothing; s.smoothing = 0.0; s.finalize(); s.smoothing = sm;
         break;
     }
     case ItemType::Shape: {
-        const auto& sh = static_cast<const ShapeItem&>(item);
-        p.save();
-        p.setOpacity(qBound(0.0, sh.opacity, 1.0));
-        QPen pen(sh.strokeColor);
-        pen.setWidthF(sh.strokeWidth);
-        pen.setCapStyle(Qt::RoundCap);
-        pen.setJoinStyle(Qt::RoundJoin);
-        p.setPen(pen);
-        p.setBrush(sh.filled ? QBrush(sh.fillColor) : Qt::NoBrush);
-        const QRectF r = QRectF(sh.p1, sh.p2).normalized();
-        switch (sh.shape) {
-        case ShapeKind::Line:      p.drawLine(sh.p1, sh.p2); break;
-        case ShapeKind::Rectangle: p.drawRect(r); break;
-        case ShapeKind::Ellipse:   p.drawEllipse(r); break;
-        case ShapeKind::Arrow: {
-            p.drawLine(sh.p1, sh.p2);
-            const double a = std::atan2(sh.p2.y() - sh.p1.y(), sh.p2.x() - sh.p1.x());
-            const double len = qMax(8.0, sh.strokeWidth * 4.0);
-            const double spread = M_PI / 7.0;
-            const QPointF b1 = sh.p2 - QPointF(std::cos(a - spread), std::sin(a - spread)) * len;
-            const QPointF b2 = sh.p2 - QPointF(std::cos(a + spread), std::sin(a + spread)) * len;
-            p.setBrush(sh.strokeColor);
-            QPolygonF head; head << sh.p2 << b1 << b2;
-            p.drawPolygon(head);
-            break;
-        }
-        }
-        p.restore();
+        auto& sh = static_cast<ShapeItem&>(item);
+        sh.p1 = xf.map(sh.p1); sh.p2 = xf.map(sh.p2);
         break;
     }
     case ItemType::Text: {
-        const auto& t = static_cast<const TextItem&>(item);
-        p.save();
-        p.setPen(t.color);
-        p.setFont(t.font);
-        const QRectF box(t.pos, QSizeF(t.wrapWidth > 0 ? t.wrapWidth : 100000, 100000));
-        p.drawText(box, (t.wrapWidth > 0 ? Qt::TextWordWrap : 0) | Qt::AlignLeft | Qt::AlignTop, t.text);
-        p.restore();
+        auto& t = static_cast<TextItem&>(item);
+        t.pos = xf.map(t.pos);
+        const double sc = std::sqrt(std::abs(xf.determinant()));
+        if (t.font.pointSizeF() > 0 && std::abs(sc - 1.0) > 1e-3)
+            t.font.setPointSizeF(qMax(1.0, t.font.pointSizeF() * sc));
         break;
     }
     case ItemType::Image: {
-        const auto& im = static_cast<const ImageItem&>(item);
-        p.save();
-        p.setOpacity(qBound(0.0, im.opacity, 1.0));
-        p.setRenderHint(QPainter::SmoothPixmapTransform, true);
-        p.drawImage(im.rect, im.image);
-        p.restore();
+        auto& im = static_cast<ImageItem&>(item);
+        im.rect = xf.mapRect(im.rect);
         break;
     }
     }
 }
 
-void CanvasRenderer::paintPage(QPainter& p, const Page& page, const Viewport& vp,
-                               const QSize& widgetSize) {
-    // Infinite canvas: fill the whole widget with the page's paper color.
-    p.fillRect(QRect(QPoint(0, 0), widgetSize), page.bgColor);
+// -------- ToolManager ------------------------------------------------------
+ToolManager::ToolManager(ICanvasHost* host) : m_host(host) {
+    m_tools[int(ToolId::Pen)]         = std::make_unique<PenTool>(this);
+    m_tools[int(ToolId::Highlighter)] = std::make_unique<HighlighterTool>(this);
+    m_tools[int(ToolId::Eraser)]      = std::make_unique<EraserTool>(this);
+    auto sel = std::make_unique<SelectTool>(this);
+    m_select = sel.get();
+    m_tools[int(ToolId::Select)]      = std::move(sel);
+    m_tools[int(ToolId::Shape)]       = std::make_unique<ShapeTool>(this);
+    m_tools[int(ToolId::Text)]        = std::make_unique<TextTool>(this);
+    m_tools[int(ToolId::Image)]       = std::make_unique<ImageTool>(this);
+    m_tools[int(ToolId::Laser)]       = std::make_unique<LaserTool>(this);
+    m_activeId = ToolId::Pen;
+}
+ToolManager::~ToolManager() = default;
 
-    p.setRenderHint(QPainter::Antialiasing, true);
-    p.setRenderHint(QPainter::TextAntialiasing, true);
-    p.setTransform(vp.pageToScreen());
+Document* ToolManager::doc() const { return m_host ? m_host->document() : nullptr; }
 
-    const QRectF vis = vp.visiblePageRect(widgetSize);
-    p.setClipRect(vis);
-    paintBackground(p, page, vis);
+Tool* ToolManager::toolFor(ToolId id) {
+    auto it = m_tools.find(int(id));
+    return it == m_tools.end() ? nullptr : it->second.get();
+}
 
-    for (const auto& layer : page.layers) {
-        if (!layer.visible) continue;
-        p.save();
-        p.setOpacity(p.opacity() * qBound(0.0, layer.opacity, 1.0));
-        for (const auto& it : layer.items) {
-            if (it->boundingRect().intersects(vis))
-                paintItem(p, *it);
-        }
-        p.restore();
+void ToolManager::setActiveTool(ToolId id) {
+    if (Tool* cur = toolFor(m_activeId)) cur->cancel();
+    m_activeId = id;
+    if (m_host) { m_host->asWidget()->setCursor(currentCursor()); m_host->requestRepaint(); }
+}
+
+QCursor ToolManager::currentCursor() const {
+    auto it = m_tools.find(int(m_activeId));
+    return it == m_tools.end() ? QCursor(Qt::ArrowCursor) : it->second->cursor();
+}
+
+// Dispatch: pen eraser end always routes to the eraser tool.
+void ToolManager::onDrawBegin(const input::InputSample& s) {
+    m_strokeTool = s.eraser ? toolFor(ToolId::Eraser) : toolFor(m_activeId);
+    if (m_strokeTool) m_strokeTool->onBegin(s);
+}
+void ToolManager::onDrawUpdate(const input::InputSample& s) { if (m_strokeTool) m_strokeTool->onUpdate(s); }
+void ToolManager::onDrawEnd(const input::InputSample& s) {
+    if (m_strokeTool) { m_strokeTool->onEnd(s); m_strokeTool = nullptr; }
+}
+void ToolManager::onHover(const input::InputSample& s, bool proximity) {
+    if (Tool* t = toolFor(m_activeId)) t->onHover(s, proximity);
+}
+void ToolManager::paintOverlay(QPainter& p, const render::Viewport& vp) {
+    if (Tool* t = toolFor(m_activeId)) t->paintOverlay(p, vp);
+    if (m_strokeTool && m_strokeTool != toolFor(m_activeId)) m_strokeTool->paintOverlay(p, vp);
+}
+
+// -------- document access --------------------------------------------------
+Page&    ToolManager::activePage()  { return doc()->current(); }
+Layer&   ToolManager::activeLayer() { return activePage().active(); }
+History& ToolManager::history()     { return doc()->history(); }
+
+Item* ToolManager::findItem(const QUuid& id) {
+    for (const auto& it : activeLayer().items) if (it->id() == id) return it.get();
+    return nullptr;
+}
+
+// -------- undoable primitives ----------------------------------------------
+void ToolManager::commitAdd(ItemPtr item) {
+    const QUuid id = item->id();
+    auto holder = std::make_shared<ItemPtr>(std::move(item));
+    Document* d = doc();
+    Command c;
+    c.label = "Add";
+    c.redo = [this, holder, d] {
+        if (*holder) { activeLayer().items.push_back(std::move(*holder)); d->markContentChanged(); }
+    };
+    c.undo = [this, holder, id, d] {
+        auto& items = activeLayer().items;
+        for (auto it = items.begin(); it != items.end(); ++it)
+            if ((*it)->id() == id) { *holder = std::move(*it); items.erase(it); break; }
+        d->markContentChanged();
+    };
+    history().push(std::move(c));
+}
+
+void ToolManager::commitRemove(const std::vector<QUuid>& ids) {
+    if (ids.empty()) return;
+    auto store = std::make_shared<std::vector<ItemPtr>>();
+    Document* d = doc();
+    Command c;
+    c.label = "Erase";
+    c.redo = [this, ids, store, d] {
+        store->clear();
+        auto& items = activeLayer().items;
+        for (const QUuid& id : ids)
+            for (auto it = items.begin(); it != items.end(); ++it)
+                if ((*it)->id() == id) { store->push_back(std::move(*it)); items.erase(it); break; }
+        d->markContentChanged();
+    };
+    c.undo = [this, store, d] {
+        auto& items = activeLayer().items;
+        for (auto& p : *store) items.push_back(std::move(p));
+        store->clear();
+        d->markContentChanged();
+    };
+    history().push(std::move(c));
+}
+
+void ToolManager::commitTransform(const std::vector<QUuid>& ids, const QTransform& xf) {
+    if (ids.empty() || xf.isIdentity()) return;
+    const QTransform inv = xf.inverted();
+    Document* d = doc();
+    Command c;
+    c.label = "Transform";
+    c.redo = [this, ids, xf, d] {
+        for (const QUuid& id : ids) if (Item* it = findItem(id)) transformItem(*it, xf);
+        d->markContentChanged();
+    };
+    c.undo = [this, ids, inv, d] {
+        for (const QUuid& id : ids) if (Item* it = findItem(id)) transformItem(*it, inv);
+        d->markContentChanged();
+    };
+    history().push(std::move(c));
+}
+
+// -------- menu / shortcut helpers ------------------------------------------
+void ToolManager::undo() { history().undo(); if (m_host) m_host->requestRepaint(); }
+void ToolManager::redo() { history().redo(); if (m_host) m_host->requestRepaint(); }
+
+void ToolManager::deleteSelection() {
+    if (!m_select) return;
+    commitRemove(m_select->selection());
+    m_select->clearSelection();
+    if (m_host) m_host->requestRepaint();
+}
+
+void ToolManager::copySelection() {
+    if (!m_select) return;
+    m_clipboard.clear();
+    for (const QUuid& id : m_select->selection())
+        if (Item* it = findItem(id)) m_clipboard.push_back(it->clone());
+}
+
+void ToolManager::paste() {
+    if (m_clipboard.empty()) return;
+    std::vector<QUuid> newIds;
+    const QTransform off = QTransform::fromTranslate(24, 24);
+    for (const auto& proto : m_clipboard) {
+        auto copy = proto->clone();
+        copy->setId(QUuid::createUuid());
+        transformItem(*copy, off);
+        newIds.push_back(copy->id());
+        commitAdd(std::move(copy));
     }
-    p.resetTransform();
-    p.setClipping(false);
+    setActiveTool(ToolId::Select);
+    if (m_select) m_select->setSelection(newIds);
+    if (m_host) m_host->requestRepaint();
 }
 
-} // namespace ib::render
-EOF
-
-# ---- render/ICanvasHost.h --------------------------------------------------
-cat > src/render/ICanvasHost.h <<'EOF'
-#pragma once
-#include <QRectF>
-class QWidget;
-namespace ib {
-class Document;
-namespace render { class Viewport; }
-
-// Abstraction the tools use to reach the document/viewport and to request
-// repaints, without depending on the concrete widget class.
-class ICanvasHost {
-public:
-    virtual ~ICanvasHost() = default;
-    virtual Document* document() = 0;
-    virtual render::Viewport& viewport() = 0;
-    virtual void requestRepaint() = 0;
-    virtual QWidget* asWidget() = 0;
-};
-
-} // namespace ib
-EOF
-
-# ---- input/PressureCurve.h -------------------------------------------------
-cat > src/input/PressureCurve.h <<'EOF'
-#pragma once
-namespace ib::input {
-
-// Configurable pen pressure response. gamma<1 = softer (more ink at low
-// force); gamma>1 = firmer. min/max clamp the usable output band.
-class PressureCurve {
-public:
-    double gamma = 1.0;
-    double minOut = 0.0;
-    double maxOut = 1.0;
-
-    float apply(float raw) const;
-
-    static PressureCurve soft()  { return {0.6, 0.05, 1.0}; }
-    static PressureCurve firm()  { return {1.6, 0.0, 1.0}; }
-    static PressureCurve linear(){ return {1.0, 0.0, 1.0}; }
-};
-
-} // namespace ib::input
-EOF
-
-# ---- input/PressureCurve.cpp -----------------------------------------------
-cat > src/input/PressureCurve.cpp <<'EOF'
-#include "input/PressureCurve.h"
-#include <algorithm>
-#include <cmath>
-
-namespace ib::input {
-float PressureCurve::apply(float raw) const {
-    double x = std::clamp(double(raw), 0.0, 1.0);
-    double y = std::pow(x, gamma <= 0 ? 1.0 : gamma);
-    y = minOut + (maxOut - minOut) * y;
-    return float(std::clamp(y, 0.0, 1.0));
-}
-} // namespace ib::input
-EOF
-
-# ---- input/InputRouter.h ---------------------------------------------------
-cat > src/input/InputRouter.h <<'EOF'
-#pragma once
-#include <QObject>
-#include <QPointF>
-#include "model/Enums.h"
-#include "model/StrokePoint.h"
-#include "input/PressureCurve.h"
-
-class QTabletEvent;
-class QTouchEvent;
-class QMouseEvent;
-
-namespace ib::render { class Viewport; }
-namespace ib::input {
-
-// A normalized input sample handed to tools. Coordinates are provided in BOTH
-// spaces so tools can hit-test in page space and draw cursors in screen space.
-struct InputSample {
-    enum class Source { Pen, Mouse, Touch };
-    QPointF pagePos;
-    QPointF screenPos;
-    float   pressure = 1.0f;
-    float   tiltX = 0.0f;
-    float   tiltY = 0.0f;
-    qint64  tMs = 0;
-    Source  source = Source::Pen;
-    bool    eraser = false;   // pen flipped to eraser end
-};
-
-// Turns raw Qt events into high-level draw/gesture/hover signals and enforces
-// the pen-vs-touch policy (palm rejection, touch = gestures, pen = ink).
-class InputRouter : public QObject {
-    Q_OBJECT
-public:
-    explicit InputRouter(QObject* parent = nullptr) : QObject(parent) {}
-
-    TouchMode     touchMode = TouchMode::GestureOnly;
-    bool          fingerDrawing = false;   // allow finger to draw ink
-    PressureCurve pressure = PressureCurve::linear();
-
-    bool handleTablet(QTabletEvent* e, const render::Viewport& vp);
-    bool handleTouch (QTouchEvent*  e, const render::Viewport& vp);
-    bool handleMouse (QMouseEvent*  e, const render::Viewport& vp);
-    void setPenInProximity(bool prox, const QPointF& screenPos, const render::Viewport& vp);
-
-    bool penActive() const { return m_penDown || m_penProximity; }
-
-signals:
-    void drawBegin (const ib::input::InputSample& s);
-    void drawUpdate(const ib::input::InputSample& s);
-    void drawEnd   (const ib::input::InputSample& s);
-    void hoverMove (const ib::input::InputSample& s, bool inProximity);
-    void gesturePan   (const QPointF& deltaScreen);
-    void gestureZoom  (const QPointF& screenAnchor, double factor);
-    void gestureRotate(const QPointF& screenAnchor, double deltaRad);
-
-private:
-    InputSample make(const QPointF& screen, float pressure, InputSample::Source src,
-                     bool eraser, const render::Viewport& vp) const;
-
-    bool m_penDown = false;
-    bool m_penProximity = false;
-
-    // touch gesture state
-    bool    m_gestureActive = false;
-    bool    m_touchDrawActive = false;
-    QPointF m_lastCentroid;
-    double  m_lastDist = 0.0;
-    double  m_lastAngle = 0.0;
-    InputSample m_lastSample;
-};
-
-} // namespace ib::input
-EOF
-
-# ---- input/InputRouter.cpp -------------------------------------------------
-cat > src/input/InputRouter.cpp <<'EOF'
-#include "input/InputRouter.h"
-#include "render/Viewport.h"
-#include <QTabletEvent>
-#include <QTouchEvent>
-#include <QMouseEvent>
-#include <QDateTime>
-#include <cmath>
-
-namespace ib::input {
-
-InputSample InputRouter::make(const QPointF& screen, float pr, InputSample::Source src,
-                              bool eraser, const render::Viewport& vp) const {
-    InputSample s;
-    s.screenPos = screen;
-    s.pagePos = vp.toPage(screen);
-    s.pressure = pr;
-    s.source = src;
-    s.eraser = eraser;
-    s.tMs = QDateTime::currentMSecsSinceEpoch();
-    return s;
+void ToolManager::selectAll() {
+    if (!m_select) return;
+    std::vector<QUuid> ids;
+    for (const auto& it : activeLayer().items) ids.push_back(it->id());
+    setActiveTool(ToolId::Select);
+    m_select->setSelection(std::move(ids));
+    if (m_host) m_host->requestRepaint();
 }
 
-void InputRouter::setPenInProximity(bool prox, const QPointF& screenPos, const render::Viewport& vp) {
-    m_penProximity = prox;
-    InputSample s = make(screenPos, 0.0f, InputSample::Source::Pen, false, vp);
-    emit hoverMove(s, prox);
-}
-
-bool InputRouter::handleTablet(QTabletEvent* e, const render::Viewport& vp) {
-    const bool eraser = e->pointerType() == QPointingDevice::PointerType::Eraser;
-    const QPointF screen = e->position();
-    InputSample s = make(screen, pressure.apply(float(e->pressure())),
-                         InputSample::Source::Pen, eraser, vp);
-    s.tiltX = float(e->xTilt());
-    s.tiltY = float(e->yTilt());
-    m_penProximity = true;
-    m_lastSample = s;
-
-    switch (e->type()) {
-    case QEvent::TabletPress:   m_penDown = true;  emit drawBegin(s);  break;
-    case QEvent::TabletMove:
-        if (m_penDown) emit drawUpdate(s);
-        else           emit hoverMove(s, true);
-        break;
-    case QEvent::TabletRelease: m_penDown = false; emit drawEnd(s);    break;
-    default: return false;
-    }
-    e->accept();
-    return true;
-}
-
-bool InputRouter::handleMouse(QMouseEvent* e, const render::Viewport& vp) {
-    if (penActive()) return false;               // pen owns input when present
-    const QPointF screen = e->position();
-    InputSample s = make(screen, 1.0f, InputSample::Source::Mouse, false, vp);
-    m_lastSample = s;
-    switch (e->type()) {
-    case QEvent::MouseButtonPress:
-        if (e->button() == Qt::LeftButton) { m_penDown = false; emit drawBegin(s); }
-        break;
-    case QEvent::MouseMove:
-        if (e->buttons() & Qt::LeftButton) emit drawUpdate(s);
-        else                               emit hoverMove(s, false);
-        break;
-    case QEvent::MouseButtonRelease:
-        if (e->button() == Qt::LeftButton) emit drawEnd(s);
-        break;
-    default: return false;
-    }
-    return true;
-}
-
-bool InputRouter::handleTouch(QTouchEvent* e, const render::Viewport& vp) {
-    if (penActive()) { e->accept(); return true; }   // palm/touch rejection near pen
-
-    QList<QEventPoint> live;
-    for (const QEventPoint& p : e->points())
-        if (p.state() != QEventPoint::State::Released) live.push_back(p);
-
-    const int n = live.size();
-    if (n == 0 || e->type() == QEvent::TouchEnd || e->type() == QEvent::TouchCancel) {
-        if (m_touchDrawActive) { emit drawEnd(m_lastSample); m_touchDrawActive = false; }
-        m_gestureActive = false;
-        e->accept();
-        return true;
-    }
-
-    // centroid of active points
-    QPointF centroid(0, 0);
-    for (const auto& p : live) centroid += p.position();
-    centroid /= double(n);
-
-    if (n >= 2) {
-        if (m_touchDrawActive) { emit drawEnd(m_lastSample); m_touchDrawActive = false; }
-        const QPointF a = live[0].position(), b = live[1].position();
-        const double dist  = std::hypot(b.x() - a.x(), b.y() - a.y());
-        const double angle = std::atan2(b.y() - a.y(), b.x() - a.x());
-        if (m_gestureActive) {
-            emit gesturePan(centroid - m_lastCentroid);
-            if (m_lastDist > 1.0) emit gestureZoom(centroid, dist / m_lastDist);
-            emit gestureRotate(centroid, angle - m_lastAngle);
-        }
-        m_lastCentroid = centroid; m_lastDist = dist; m_lastAngle = angle;
-        m_gestureActive = true;
-    } else { // single finger
-        const QPointF sp = live[0].position();
-        if (fingerDrawing && touchMode == TouchMode::DrawAndGesture) {
-            InputSample s = make(sp, 1.0f, InputSample::Source::Touch, false, vp);
-            m_lastSample = s;
-            if (!m_touchDrawActive) { emit drawBegin(s); m_touchDrawActive = true; }
-            else                     emit drawUpdate(s);
-        } else if (touchMode != TouchMode::Ignore) {
-            if (m_gestureActive) emit gesturePan(sp - m_lastCentroid);
-            m_lastCentroid = sp; m_gestureActive = true;
-        }
-    }
-    e->accept();
-    return true;
-}
-
-} // namespace ib::input
-EOF
-
-# ---- render/CanvasWidget.h -------------------------------------------------
-cat > src/render/CanvasWidget.h <<'EOF'
-#pragma once
-#include <QElapsedTimer>
-#include <QTimer>
-#include "render/ICanvasHost.h"
-#include "render/Viewport.h"
-#include "input/InputRouter.h"
-
-#ifdef INKBOARD_USE_OPENGL
-#include <QOpenGLWidget>
-using CanvasBase = QOpenGLWidget;
-#else
-#include <QWidget>
-using CanvasBase = QWidget;
-#endif
-
-namespace ib {
-class Document;
-class ToolManager;
-
-// The interactive drawing surface. Owns the Viewport, feeds raw events to the
-// InputRouter, and paints via CanvasRenderer + tool overlays. Implements
-// ICanvasHost so tools can drive it.
-class CanvasWidget : public CanvasBase, public ICanvasHost {
-    Q_OBJECT
-public:
-    explicit CanvasWidget(QWidget* parent = nullptr);
-    ~CanvasWidget() override;
-
-    void setDocument(Document* doc);
-    void setToolManager(ToolManager* tm);
-    input::InputRouter& router() { return m_router; }
-
-    // Pointer fade-out (laser/hover) configuration — requirement #5.
-    void setPointerVanishDelayMs(int ms) { m_vanishDelayMs = ms; }
-    void setPointerFadeMs(int ms) { m_fadeMs = ms; }
-
-    void zoomToFit();
-    void resetView();
-
-    // ICanvasHost
-    Document* document() override { return m_doc; }
-    render::Viewport& viewport() override { return m_vp; }
-    void requestRepaint() override { update(); }
-    QWidget* asWidget() override { return this; }
-
-protected:
-#ifdef INKBOARD_USE_OPENGL
-    void paintGL() override { paintCanvas(); }
-#else
-    void paintEvent(QPaintEvent*) override { paintCanvas(); }
-#endif
-    bool event(QEvent* e) override;
-    void tabletEvent(QTabletEvent* e) override;
-    void mousePressEvent(QMouseEvent* e) override;
-    void mouseMoveEvent(QMouseEvent* e) override;
-    void mouseReleaseEvent(QMouseEvent* e) override;
-    void wheelEvent(QWheelEvent* e) override;
-
-private:
-    void paintCanvas();
-    void drawPointerFx(QPainter& p);
-    void onProximityChanged(const input::InputSample& s, bool inProximity);
-
-    Document* m_doc = nullptr;
-    ToolManager* m_tools = nullptr;
-    render::Viewport m_vp;
-    input::InputRouter m_router;
-
-    // pointer fx
-    QPointF m_hoverPos;
-    bool    m_hoverVisible = false;
-    bool    m_hoverProx = false;
-    QElapsedTimer m_leaveClock;
-    QTimer  m_fxTimer;
-    int     m_vanishDelayMs = 250;
-    int     m_fadeMs = 450;
-};
-
-} // namespace ib
-EOF
-
-# ---- render/CanvasWidget.cpp -----------------------------------------------
-cat > src/render/CanvasWidget.cpp <<'EOF'
-#include "render/CanvasWidget.h"
-#include "render/CanvasRenderer.h"
-#include "model/Document.h"
-#include "tools/ToolManager.h"
-#include <QPainter>
-#include <QTabletEvent>
-#include <QTouchEvent>
-#include <QMouseEvent>
-#include <QWheelEvent>
-#include <cmath>
-
-namespace ib {
-
-CanvasWidget::CanvasWidget(QWidget* parent) : CanvasBase(parent) {
-    setAttribute(Qt::WA_AcceptTouchEvents, true);
-    setMouseTracking(true);
-    setFocusPolicy(Qt::StrongFocus);
-
-    m_fxTimer.setInterval(16); // ~60fps while fading
-    connect(&m_fxTimer, &QTimer::timeout, this, [this] {
-        update();
-        if (!m_hoverProx && m_leaveClock.isValid() &&
-            m_leaveClock.elapsed() > (m_vanishDelayMs + m_fadeMs)) {
-            m_hoverVisible = false;
-            m_fxTimer.stop();
-        }
-    });
-
-    // Wire router -> tools + view.
-    connect(&m_router, &input::InputRouter::drawBegin, this, [this](const input::InputSample& s){
-        if (m_tools) m_tools->onDrawBegin(s);
-    });
-    connect(&m_router, &input::InputRouter::drawUpdate, this, [this](const input::InputSample& s){
-        if (m_tools) m_tools->onDrawUpdate(s);
-    });
-    connect(&m_router, &input::InputRouter::drawEnd, this, [this](const input::InputSample& s){
-        if (m_tools) m_tools->onDrawEnd(s);
-    });
-    connect(&m_router, &input::InputRouter::hoverMove, this,
-            [this](const input::InputSample& s, bool prox){ onProximityChanged(s, prox); });
-    connect(&m_router, &input::InputRouter::gesturePan, this, [this](const QPointF& d){
-        m_vp.panBy(d); update();
-    });
-    connect(&m_router, &input::InputRouter::gestureZoom, this, [this](const QPointF& a, double f){
-        m_vp.zoomAt(a, f); update();
-    });
-    connect(&m_router, &input::InputRouter::gestureRotate, this, [this](const QPointF& a, double r){
-        m_vp.rotateAt(a, r); update();
-    });
-}
-
-CanvasWidget::~CanvasWidget() = default;
-
-void CanvasWidget::setDocument(Document* doc) {
-    if (m_doc == doc) return;
-    if (m_doc) m_doc->disconnect(this);
-    m_doc = doc;
-    if (m_doc) {
-        connect(m_doc, &Document::contentChanged, this, [this]{ update(); });
-        connect(m_doc, &Document::currentPageChanged, this, [this](int){ update(); });
-    }
-    update();
-}
-
-void CanvasWidget::setToolManager(ToolManager* tm) { m_tools = tm; }
-
-void CanvasWidget::zoomToFit() {
-    if (!m_doc) return;
-    const QRectF b = m_doc->current().contentBounds();
-    if (b.isEmpty()) { resetView(); return; }
-    m_vp.fitTo(b, size());
-    update();
-}
-
-void CanvasWidget::resetView() { m_vp = render::Viewport{}; update(); }
-
-void CanvasWidget::onProximityChanged(const input::InputSample& s, bool inProximity) {
-    m_hoverPos = s.screenPos;
-    m_hoverProx = inProximity;
-    if (inProximity) {
-        m_hoverVisible = true;
-        m_leaveClock.invalidate();
-        m_fxTimer.stop();
-    } else {
-        m_leaveClock.restart();     // begin vanish-delay + fade timeline
-        m_fxTimer.start();
-    }
-    if (m_tools) m_tools->onHover(s, inProximity);
-    update();
-}
-
-void CanvasWidget::paintCanvas() {
-    QPainter p(this);
-    if (m_doc) {
-        CanvasRenderer::paintPage(p, m_doc->current(), m_vp, size());
-        if (m_tools) m_tools->paintOverlay(p, m_vp);
-    } else {
-        p.fillRect(rect(), QColor(30, 31, 34));
-    }
-    drawPointerFx(p);
-}
-
-void CanvasWidget::drawPointerFx(QPainter& p) {
-    if (!m_hoverVisible) return;
-    double alpha = 1.0;
-    if (!m_hoverProx && m_leaveClock.isValid()) {
-        const qint64 e = m_leaveClock.elapsed();
-        if (e <= m_vanishDelayMs) alpha = 1.0;
-        else {
-            const double t = qBound(0.0, double(e - m_vanishDelayMs) / qMax(1, m_fadeMs), 1.0);
-            const double eased = 1.0 - std::pow(t, 3.0); // easeOutCubic fade
-            alpha = eased;
-        }
-    }
-    if (alpha <= 0.001) return;
-    p.save();
-    p.setRenderHint(QPainter::Antialiasing, true);
-    QColor ring(60, 90, 254);
-    ring.setAlphaF(0.85 * alpha);
-    QPen pen(ring); pen.setWidthF(1.5);
-    p.setPen(pen);
-    p.setBrush(Qt::NoBrush);
-    p.drawEllipse(m_hoverPos, 7, 7);
-    p.restore();
-}
-
-bool CanvasWidget::event(QEvent* e) {
-    switch (e->type()) {
-    case QEvent::TabletEnterProximity:
-        m_router.setPenInProximity(true, m_hoverPos, m_vp);
-        return true;
-    case QEvent::TabletLeaveProximity:
-        m_router.setPenInProximity(false, m_hoverPos, m_vp);
-        return true;
-    case QEvent::TouchBegin:
-    case QEvent::TouchUpdate:
-    case QEvent::TouchEnd:
-    case QEvent::TouchCancel:
-        if (m_router.handleTouch(static_cast<QTouchEvent*>(e), m_vp)) { update(); return true; }
-        break;
-    default: break;
-    }
-    return CanvasBase::event(e);
-}
-
-void CanvasWidget::tabletEvent(QTabletEvent* e) {
-    if (m_router.handleTablet(e, m_vp)) update();
-    else CanvasBase::tabletEvent(e);
-}
-void CanvasWidget::mousePressEvent(QMouseEvent* e)   { if (m_router.handleMouse(e, m_vp)) update(); }
-void CanvasWidget::mouseMoveEvent(QMouseEvent* e)    { if (m_router.handleMouse(e, m_vp)) update(); }
-void CanvasWidget::mouseReleaseEvent(QMouseEvent* e) { if (m_router.handleMouse(e, m_vp)) update(); }
-
-void CanvasWidget::wheelEvent(QWheelEvent* e) {
-    if (e->modifiers() & Qt::ControlModifier) {
-        const double f = std::pow(1.0015, e->angleDelta().y());
-        m_vp.zoomAt(e->position(), f);
-    } else if (e->modifiers() & Qt::ShiftModifier) {
-        m_vp.panBy(QPointF(e->angleDelta().y() / 2.0, 0));
-    } else {
-        m_vp.panBy(QPointF(e->angleDelta().x() / 2.0, e->angleDelta().y() / 2.0));
-    }
-    update();
-    e->accept();
+void ToolManager::insertImageAtCenter(const QImage& img) {
+    if (img.isNull()) return;
+    auto im = std::make_unique<ImageItem>();
+    im->image = img;
+    const QRectF vis = m_host->viewport().visiblePageRect(m_host->asWidget()->size());
+    const QPointF c = vis.center();
+    im->rect = QRectF(c - QPointF(img.width() / 2.0, img.height() / 2.0),
+                      QSizeF(img.width(), img.height()));
+    commitAdd(std::move(im));
+    if (m_host) m_host->requestRepaint();
 }
 
 } // namespace ib
 EOF
 
-log "PART 3 complete: viewport, GPU canvas renderer, pointer fade FX, and pen/touch router written."
+log "PART 4 complete: all tools + undoable tool manager written."
 # =============================================================================
-#  END OF PART 3  —  append PART 4 (tools: pen/highlighter/eraser/select/...) below
+#  END OF PART 5 target next: MainWindow, UI, theming, PDF/PNG/SVG, autosave
 # =============================================================================
 
 # =============================================================================
