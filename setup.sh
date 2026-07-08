@@ -15278,3 +15278,67 @@ grep -q "sole size indicator" src/canvas/Canvas.cpp \
 	|| { echo "PART 20 ERROR: drawBrushPreview patch did not apply"; exit 1; }
 
 log "PART 20 complete: no more preview circles under the pointer (eraser ring kept)"
+
+# ---------------------------------------------------------------------------
+#  PART 21 : Dark toolbar theme. Toolbar is dark with white labels; on hover
+#            the button turns white with dark text (never white-on-white); the
+#            active tool is a clear blue. Toolbar QLabels ("Size") go white too.
+#            Swatches are icon-based, so a transparent button bg doesn't hurt
+#            them. Overwrites src/main.cpp only.
+# ---------------------------------------------------------------------------
+log "PART 21: dark toolbar theme (white text, white-on-hover with dark text)"
+
+cat > src/main.cpp <<'EOF'
+#include <QApplication>
+#include "ui/MainWindow.h"
+
+int main(int argc, char **argv)
+{
+    QApplication app(argc, argv);
+    QCoreApplication::setOrganizationName("InkBoard");
+    QCoreApplication::setApplicationName("InkBoard");
+#ifdef INKBOARD_VERSION
+    QCoreApplication::setApplicationVersion(INKBOARD_VERSION);
+#endif
+
+    app.setStyleSheet(QStringLiteral(
+        "QToolBar { background: #2b2d31; border: none; spacing: 4px; padding: 3px; }"
+        "QToolBar QLabel { color: #f5f5f5; }"
+        "QToolBar QToolButton { color: #f5f5f5; background: transparent;"
+        " padding: 4px 9px; border-radius: 5px; }"
+        "QToolBar QToolButton:hover,"
+        "QToolBar QToolButton:checked:hover { background: #ffffff; color: #1a1a1a; }"
+        "QToolBar QToolButton:checked { background: #3d7be0; color: #ffffff; }"
+        "QToolBar QToolButton:pressed { background: #dfe7f5; color: #10233f; }"
+        "QMenu::item:selected { background: #3d7be0; color: #ffffff; }"
+        "QToolTip { color: #1e1e1e; background: #ffffdc;"
+        " border: 1px solid #b0b0b0; padding: 2px; }"
+    ));
+
+    ib::MainWindow window;
+    window.show();
+    return app.exec();
+}
+EOF
+
+log "PART 21 complete: dark toolbar, white labels, white-on-hover dark text, blue active tool"
+
+# ---------------------------------------------------------------------------
+#  PART 22 : True in-place text editing. A QTextEdit overlay appears at the
+#            click point, auto-resizes to its content (cannot bloat), commits
+#            on focus-out or Ctrl+Enter, cancels on Esc. Double-click any text
+#            item to edit it in place (undo-safe via a macro). Replaces the old
+#            QInputDialog flow. Patches Canvas.h and Canvas.cpp.
+# ---------------------------------------------------------------------------
+log "PART 22: in-place text editor (auto-sizing, double-click to edit)"
+
+# --- Canvas.h: forward decls, override, methods, members -----------------
+perl -0777 -i -pe 's/(class QTimer;)/$1\nclass QTextEdit;/'                                   src/canvas/Canvas.h
+perl -0777 -i -pe 's/(class Canvas : public QWidget)/class TextItem;\n\n$1/'                    src/canvas/Canvas.h
+perl -0777 -i -pe 's/(void\s+mousePressEvent\s*\(\s*QMouseEvent\s*\*\s*e\s*\)\s*override\s*;)/$1\n\tvoid mouseDoubleClickEvent(QMouseEvent *e) override;/' src/canvas/Canvas.h
+perl -0777 -i -pe 's/(void\s+addTextAt\s*\(\s*const\s+QPointF\s*&\s*sp\s*\)\s*;)/$1\n\tvoid beginInlineText(const QPointF &scenePos, TextItem *existing = nullptr);\n\tvoid commitInlineText();\n\tvoid cancelInlineText();/' src/canvas/Canvas.h
+perl -0777 -i -pe 's/(bool\s+m_hoverValid\s*=\s*false\s*;)/$1\n\n\tQTextEdit *m_textEditor = nullptr;\n\tQPointF    m_textScenePos;\n\tTextItem  *m_editingText = nullptr;/' src/canvas/Canvas.h
+grep -q "beginInlineText" src/canvas/Canvas.h || { echo "PART 22 ERROR: Canvas.h patches failed"; exit 1; }
+
+# --- Canvas.cpp: includes ------------------------------------------------
+perl -0777 -i -pe 's/(#include <QLineEdit>)/
