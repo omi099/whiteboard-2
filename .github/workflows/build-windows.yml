@@ -39,7 +39,7 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE/pen-whiteboard"
           {
-            for f in src/core/Exporter.h src/core/Exporter.cpp src/core/Commands.h src/core/Commands.cpp src/model/ShapeItem.h src/model/TextItem.h src/model/ImageItem.h src/canvas/Laser.h src/main.cpp CMakeLists.txt src/ui/PreferencesDialog.h src/ui/PreferencesDialog.cpp; do
+            for f in src/core/Serializer.h src/core/Serializer.cpp src/model/Page.h src/model/Types.h src/model/Layer.h src/model/Item.h; do
               echo "===================================================================="
               if [ -f "$f" ]; then
                 echo "===== FILE: $f ====="
