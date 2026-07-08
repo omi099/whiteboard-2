@@ -7,6 +7,10 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+defaults:
+  run:
+    working-directory: pen-whiteboard   # <-- project lives here
+
 jobs:
   windows:
     name: Windows x64 (MSVC)
@@ -51,12 +55,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: InkBoard-windows-portable
-          path: dist/**
+          path: pen-whiteboard/dist/**          # <-- path is repo-root relative
           if-no-files-found: error
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
           name: InkBoard-windows-installer
-          path: InkBoard-Setup.exe
+          path: pen-whiteboard/InkBoard-Setup.exe   # <-- repo-root relative
           if-no-files-found: error
