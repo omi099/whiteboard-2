@@ -64,6 +64,33 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Export source files to a text file
+        if: always()
+        shell: bash
+        run: |
+          cd "$GITHUB_WORKSPACE/pen-whiteboard"
+          {
+            for f in \
+              src/model/Types.h \
+              src/model/Page.h \
+              src/model/Document.h \
+              src/ui/MainWindow.h \
+              src/ui/MainWindow.cpp ; do
+              echo "===================================================================="
+              if [ -f "$f" ]; then
+                echo "===== FILE: $f ====="
+                echo "===================================================================="
+                cat "$f"
+                echo
+              else
+                echo "===== MISSING: $f (not found) ====="
+                echo "===================================================================="
+              fi
+              echo
+            done
+          } > "$GITHUB_WORKSPACE/laser_files.txt"
+          echo "Wrote laser_files.txt"
+
 
       - name: Verify generated sources
         shell: bash
