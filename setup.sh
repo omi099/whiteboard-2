@@ -9106,3 +9106,24 @@ void PreferencesDialog::applyAndAccept()
 EOF
 
 log "PART 11 complete: laser vanishing mode fades + clears when the pen leaves range"
+# Run from the pen-whiteboard project root.
+{
+  for f in src/model/Item.h src/model/StrokeItem.h src/model/StrokeItem.cpp src/core/Serializer.cpp; do
+    echo "===================================================================="
+    if [ -f "$f" ]; then
+      echo "===== FILE: $f ====="
+      echo "===================================================================="
+      cat "$f"
+      echo
+    else
+      echo "===== MISSING: $f (not found) ====="
+      echo "===================================================================="
+    fi
+    echo
+  done
+} > laser_files.txt
+
+echo "Wrote laser_files.txt"
+echo "-------------------- BEGIN laser_files.txt --------------------"
+cat laser_files.txt
+echo "-------------------- END laser_files.txt --------------------"
