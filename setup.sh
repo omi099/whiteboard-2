@@ -15115,3 +15115,52 @@ sed -i \
   src/ui/MainWindow.cpp
 
 log "PART 17 complete: notebook sections + pages sidebar (add/rename/delete sections, page create/delete, live two-way sync, per-page orientation hints; section persisted in .iboard, old files load unchanged)"
+
+
+# ---------------------------------------------------------------------------
+#  PART 18 : Fix toolbar/menu legibility. Tool buttons (Pen, Eraser, ...) were
+#            rendering white text on a white/near-white background on hover and
+#            when checked. Scoped app stylesheet guarantees contrast in every
+#            state (normal / hover / checked) plus menus and tooltips.
+#            Overwrites src/main.cpp only.
+# ---------------------------------------------------------------------------
+log "PART 18: toolbar + menu readability (no more white-on-white)"
+
+cat > src/main.cpp <<'EOF'
+#include <QApplication>
+#include "ui/MainWindow.h"
+
+int main(int argc, char **argv)
+{
+    QApplication app(argc, argv);
+    QCoreApplication::setOrganizationName("InkBoard");
+    QCoreApplication::setApplicationName("InkBoard");
+#ifdef INKBOARD_VERSION
+    QCoreApplication::setApplicationVersion(INKBOARD_VERSION);
+#endif
+
+    // Scoped so only toolbar/menu/tooltip chrome is affected (never the canvas
+    // or dialog contents): always-dark label text, clear hover, high-contrast
+    // checked state.
+    app.setStyleSheet(QStringLiteral(
+        "QToolBar { spacing: 4px; }"
+        "QToolBar QToolButton { color: #1e1e1e; padding: 4px 6px; border-radius: 4px; }"
+        "QToolBar QToolButton:hover { background: #d9e6ff; color: #10233f; }"
+        "QToolBar QToolButton:checked { background: #2f6fed; color: #ffffff; }"
+        "QToolBar QToolButton:checked:hover { background: #285fce; color: #ffffff; }"
+        "QToolBar QToolButton:pressed { background: #285fce; color: #ffffff; }"
+        "QMenuBar::item { color: #1e1e1e; }"
+        "QMenuBar::item:selected { background: #d9e6ff; color: #10233f; }"
+        "QMenu { color: #1e1e1e; }"
+        "QMenu::item:selected { background: #2f6fed; color: #ffffff; }"
+        "QToolTip { color: #1e1e1e; background: #ffffdc; "
+        "border: 1px solid #b0b0b0; padding: 2px; }"
+    ));
+
+    ib::MainWindow window;
+    window.show();
+    return app.exec();
+}
+EOF
+
+log "PART 18 complete: tool buttons, menus and tooltips are always readable (dark text; high-contrast checked/hover states)"
