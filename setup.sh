@@ -10241,15 +10241,16 @@ EOF
 log "PART 12 complete: permanent laser is now a real erasable/undoable/saveable glow stroke"
 
 # ---------------------------------------------------------------------------
-#  PART 13 : Unify laser as real ink in BOTH modes. Vanishing mode now fades
-#            and auto-removes real laser strokes when the pen leaves range,
-#            so laser is fully erasable / undoable / selectable in every mode.
-#            Overwrites StrokeItem.{h,cpp} and Canvas.{h,cpp}.
+#  PART 13 : Vanishing-mode laser now behaves EXACTLY like the pen — it is a
+#            real glow StrokeItem (erasable, undoable, selectable, saveable).
+#            "Vanishing" just fades that real stroke out and removes it when
+#            the pen leaves the tablet's range. Overwrites StrokeItem.h and
+#            Canvas.cpp only (Canvas.h untouched).
 # ---------------------------------------------------------------------------
-log "PART 13: vanish-mode laser is now real erasable ink that auto-removes on pen-leave"
+log "PART 13: vanishing laser is a real erasable pen-like glow stroke"
 
 # ---------------------------------------------------------------------------
-#  src/model/StrokeItem.h  (overwrite: add 'laser' tag field)
+#  src/model/StrokeItem.h  (overwrite: add runtime-only 'ephemeral' flag)
 # ---------------------------------------------------------------------------
 cat > src/model/StrokeItem.h <<'EOF'
 #pragma once
@@ -10276,9 +10277,9 @@ public:
     QColor  glowColor     = QColor(255, 45, 40);
     double  glowRadius    = 10.0;
 
-    // Marks a stroke created by the Laser tool. Used by the canvas to fade
-    // and auto-remove laser ink when the pen leaves range (vanishing mode).
-    bool    laser         = false;
+    // Runtime-only marker: vanishing-mode laser ink. NOT serialized (write/read
+    // ignore it), so loaded strokes are always permanent. Copied by clone().
+    bool    ephemeral     = false;
 
     ItemType type() const override { return ItemType::Stroke; }
     QRectF boundingRect() const override;
@@ -10296,353 +10297,8 @@ public:
 EOF
 
 # ---------------------------------------------------------------------------
-#  src/model/StrokeItem.cpp  (overwrite: serialize 'laser'; glow unchanged)
-# ---------------------------------------------------------------------------
-cat > src/model/StrokeItem.cpp <<'EOF'
-#include "model/StrokeItem.h"
-
-#include <QPainter>
-#include <QPainterPath>
-#include <QJsonArray>
-#include <algorithm>
-
-namespace ib {
-
-static QJsonArray colorToJson(const QColor &c)
-{
-    QJsonArray a;
-    a.append(c.red());
-    a.append(c.green());
-    a.append(c.blue());
-    a.append(c.alpha());
-    return a;
-}
-
-static QColor colorFromJson(const QJsonValue &v, const QColor &def)
-{
-    const QJsonArray a = v.toArray();
-    if (a.size() < 3)
-        return def;
-    const int alpha = a.size() >= 4 ? a.at(3).toInt(255) : 255;
-    return QColor(a.at(0).toInt(), a.at(1).toInt(), a.at(2).toInt(), alpha);
-}
-
-QRectF StrokeItem::boundingRect() const
-{
-    if (points.isEmpty())
-        return QRectF();
-
-    double minX = points.first().x, maxX = minX;
-    double minY = points.first().y, maxY = minY;
-    for (const auto &pt : points) {
-        minX = std::min(minX, pt.x);
-        maxX = std::max(maxX, pt.x);
-        minY = std::min(minY, pt.y);
-        maxY = std::max(maxY, pt.y);
-    }
-    const double m = baseWidth * 0.5 + (glow ? glowRadius : 0.0) + 1.0;
-    return QRectF(QPointF(minX, minY), QPointF(maxX, maxY)).adjusted(-m, -m, m, m);
-}
-
-void StrokeItem::paint(QPainter &p) const
-{
-    if (points.isEmpty())
-        return;
-
-    p.save();
-
-    QColor c = color;
-    c.setAlphaF(c.alphaF() * qBound(0.0, opacity, 1.0));
-
-    // Glow underlay (laser pen), drawn beneath the core stroke.
-    if (glow && glowRadius > 0.0) {
-        p.setRenderHint(QPainter::Antialiasing, true);
-        const double baseAlpha = qBound(0.0, opacity, 1.0);
-        const auto glowPass = [&](double extra, double a) {
-            QColor gc = glowColor;
-            gc.setAlphaF(a * baseAlpha);
-            QPen gp(gc);
-            gp.setWidthF(qMax(0.3, baseWidth + extra));
-            gp.setCapStyle(Qt::RoundCap);
-            gp.setJoinStyle(Qt::RoundJoin);
-            p.setPen(gp);
-            p.setBrush(Qt::NoBrush);
-            if (points.size() == 1) {
-                p.drawPoint(points.first().pos());
-            } else {
-                QPainterPath path(points.first().pos());
-                for (int i = 1; i < points.size(); ++i)
-                    path.lineTo(points[i].pos());
-                p.drawPath(path);
-            }
-        };
-        glowPass(2.0 * glowRadius, 0.30);
-        glowPass(glowRadius, 0.50);
-    }
-
-    if (points.size() == 1) {
-        const double pr = pressureWidth ? qMax(0.15, points.first().pressure) : 1.0;
-        const double w  = qMax(0.3, baseWidth * pr);
-        p.setPen(Qt::NoPen);
-        p.setBrush(c);
-        p.drawEllipse(points.first().pos(), w * 0.5, w * 0.5);
-        p.restore();
-        return;
-    }
-
-    QPen pen(c);
-    pen.setCapStyle(Qt::RoundCap);
-    pen.setJoinStyle(Qt::RoundJoin);
-
-    if (pressureWidth) {
-        for (int i = 1; i < points.size(); ++i) {
-            const double pr = 0.5 * (points[i - 1].pressure + points[i].pressure);
-            pen.setWidthF(qMax(0.3, baseWidth * pr));
-            p.setPen(pen);
-            p.drawLine(points[i - 1].pos(), points[i].pos());
-        }
-    } else {
-        pen.setWidthF(baseWidth);
-        p.setPen(pen);
-        QPainterPath path(points.first().pos());
-        for (int i = 1; i < points.size(); ++i)
-            path.lineTo(points[i].pos());
-        p.drawPath(path);
-    }
-
-    p.restore();
-}
-
-std::unique_ptr<Item> StrokeItem::clone() const
-{
-    return std::make_unique<StrokeItem>(*this);
-}
-
-void StrokeItem::translate(const QPointF &delta)
-{
-    for (auto &pt : points) {
-        pt.x += delta.x();
-        pt.y += delta.y();
-    }
-}
-
-void StrokeItem::write(QJsonObject &obj) const
-{
-    obj["type"]          = "stroke";
-    obj["color"]         = colorToJson(color);
-    obj["baseWidth"]     = baseWidth;
-    obj["opacity"]       = opacity;
-    obj["highlighter"]   = highlighter;
-    obj["pressureWidth"] = pressureWidth;
-
-    if (glow) {
-        obj["glow"]       = true;
-        obj["glowColor"]  = colorToJson(glowColor);
-        obj["glowRadius"] = glowRadius;
-    }
-    if (laser)
-        obj["laser"] = true;
-
-    QJsonArray pts;
-    for (const auto &pt : points) {
-        QJsonArray a;
-        a.append(pt.x);
-        a.append(pt.y);
-        a.append(pt.pressure);
-        pts.append(a);
-    }
-    obj["points"] = pts;
-}
-
-void StrokeItem::read(const QJsonObject &obj)
-{
-    color         = colorFromJson(obj.value("color"), QColor(24, 24, 24));
-    baseWidth     = obj.value("baseWidth").toDouble(3.0);
-    opacity       = obj.value("opacity").toDouble(1.0);
-    highlighter   = obj.value("highlighter").toBool(false);
-    pressureWidth = obj.value("pressureWidth").toBool(true);
-
-    glow          = obj.value("glow").toBool(false);
-    glowColor     = colorFromJson(obj.value("glowColor"), QColor(255, 45, 40));
-    glowRadius    = obj.value("glowRadius").toDouble(10.0);
-    laser         = obj.value("laser").toBool(false);
-
-    points.clear();
-    const QJsonArray pts = obj.value("points").toArray();
-    for (const auto &v : pts) {
-        const QJsonArray a = v.toArray();
-        if (a.size() >= 2) {
-            const double pr = a.size() >= 3 ? a.at(2).toDouble(1.0) : 1.0;
-            points.push_back(StrokePoint(a.at(0).toDouble(), a.at(1).toDouble(), pr));
-        }
-    }
-}
-
-} // namespace ib
-EOF
-
-# ---------------------------------------------------------------------------
-#  src/canvas/Canvas.h  (overwrite: fade machinery now targets real strokes)
-# ---------------------------------------------------------------------------
-cat > src/canvas/Canvas.h <<'EOF'
-#pragma once
-
-#include <QWidget>
-#include <QPointF>
-#include <QRectF>
-#include <QPoint>
-#include <QString>
-#include <QElapsedTimer>
-
-#include <memory>
-#include <vector>
-#include <cstddef>
-
-#include "model/Document.h"
-#include "model/StrokeItem.h"
-#include "model/ShapeItem.h"
-#include "canvas/Tools.h"
-
-class QTimer;
-class QPainter;
-class QPaintEvent;
-class QMouseEvent;
-class QTabletEvent;
-class QWheelEvent;
-class QKeyEvent;
-
-namespace ib {
-
-class Canvas : public QWidget {
-    Q_OBJECT
-public:
-    explicit Canvas(QWidget *parent = nullptr);
-
-    void setDocument(Document *doc);
-    Document *document() const { return m_doc; }
-
-    void setTool(ToolId t);
-    ToolId tool() const { return m_settings.tool; }
-
-    void setToolSettings(const ToolSettings &s) { m_settings = s; updateCursor(); update(); }
-    const ToolSettings &toolSettings() const { return m_settings; }
-
-    double scale() const { return m_scale; }
-
-signals:
-    void viewChanged();
-    void toolChanged(ib::ToolId tool);
-    void cursorMoved(QPointF scenePos);
-
-public slots:
-    void zoomIn();
-    void zoomOut();
-    void resetView();
-    void zoomToFit();
-    void deleteSelection();
-    void selectAll();
-    void clearSelection();
-    void clearLaser();
-    void refresh() { update(); }
-
-protected:
-    void paintEvent(QPaintEvent *) override;
-    void mousePressEvent(QMouseEvent *) override;
-    void mouseMoveEvent(QMouseEvent *) override;
-    void mouseReleaseEvent(QMouseEvent *) override;
-    void tabletEvent(QTabletEvent *) override;
-    void wheelEvent(QWheelEvent *) override;
-    void keyPressEvent(QKeyEvent *) override;
-    void keyReleaseEvent(QKeyEvent *) override;
-    void leaveEvent(QEvent *) override;
-    bool eventFilter(QObject *obj, QEvent *ev) override;
-
-private slots:
-    void onFadeTick();
-
-private:
-    enum class Action { Press, Move, Release };
-
-    struct EraseStash {
-        std::size_t index;
-        ItemPtr item;
-    };
-
-    QPointF widgetToScene(const QPointF &w) const {
-        return QPointF((w.x() - m_translate.x()) / m_scale,
-                       (w.y() - m_translate.y()) / m_scale);
-    }
-    void zoomAround(const QPointF &widgetPos, double factor);
-
-    void drawBackground(QPainter &p, const Page &pg, const QRectF &area);
-    void drawSelection(QPainter &p);
-    void drawBrushPreview(QPainter &p);
-
-    void handlePointer(Action a, const QPointF &widgetPos, double pressure,
-                       Qt::KeyboardModifiers mods, bool eraserTip);
-    void handleSelect(Action a, const QPointF &sp, Qt::KeyboardModifiers mods);
-
-    void setSelectionSingle(Item *it);
-    void addToSelection(Item *it);
-    void removeFromSelection(Item *it);
-    void selectInRect(const QRectF &r, bool add);
-    Item *topItemAt(const QPointF &sp);
-    bool hitTest(Item *it, const QPointF &sp, double radius) const;
-
-    void commitAdd(ItemPtr item, const QString &text);
-    void eraseAt(const QPointF &sp);
-    void finishErase();
-    void addTextAt(const QPointF &sp);
-    void cancelActive();
-    void updateCursor();
-
-    // laser vanishing (operates on real laser strokes)
-    bool hasLaserInk();
-    void startVanish();
-    void stopVanish();
-    void removeLaserInk(const QString &text);
-
-    Document *m_doc = nullptr;
-    ToolSettings m_settings;
-
-    double m_scale = 1.0;
-    QPointF m_translate;
-
-    bool m_drawing = false;
-    bool m_erasing = false;
-    bool m_panning = false;
-    bool m_spaceDown = false;
-    QPoint m_lastPanPos;
-
-    std::unique_ptr<StrokeItem> m_activeStroke;
-    std::unique_ptr<ShapeItem> m_activeShape;
-
-    std::vector<Item *> m_selection;
-    bool m_movingSelection = false;
-    QPointF m_moveStartScene;
-    QPointF m_moveAccum;
-
-    bool m_rubber = false;
-    QPointF m_rubberStartScene;
-    QRectF m_rubberRect;
-
-    std::vector<EraseStash> m_eraseStash;
-
-    // laser fade state (fades committed laser strokes, then removes them)
-    QTimer *m_fadeTimer = nullptr;
-    QElapsedTimer m_fadeClock;
-    bool m_fading = false;
-    double m_laserFadeAlpha = 1.0;
-
-    QPointF m_cursorWidget;
-    bool m_hoverValid = false;
-};
-
-} // namespace ib
-EOF
-
-# ---------------------------------------------------------------------------
-#  src/canvas/Canvas.cpp  (overwrite: laser = real ink in both modes)
+#  src/canvas/Canvas.cpp  (overwrite: unify laser onto real strokes; vanish =
+#                          fade + RemoveItemsCommand on the ephemeral strokes)
 # ---------------------------------------------------------------------------
 cat > src/canvas/Canvas.cpp <<'EOF'
 #include "canvas/Canvas.h"
@@ -10697,6 +10353,27 @@ static QPointF constrainShape(const QPointF &a, const QPointF &b, ShapeKind kind
     return a + QPointF(d.x() < 0 ? -s : s, d.y() < 0 ? -s : s);
 }
 
+// Vanish fade curve: full until 'delay', then linear to 0 over 'dur'.
+static double fadeAlphaFor(qint64 elapsedMs, int delayMs, int durMs)
+{
+    if (elapsedMs <= delayMs)
+        return 1.0;
+    const double t = static_cast<double>(elapsedMs - delayMs) /
+                     static_cast<double>(qMax(1, durMs));
+    if (t >= 1.0)
+        return 0.0;
+    return 1.0 - t;
+}
+
+static bool layerHasEphemeral(const Layer &ly)
+{
+    for (const auto &it : ly.items)
+        if (it->type() == ItemType::Stroke &&
+            static_cast<const StrokeItem *>(it.get())->ephemeral)
+            return true;
+    return false;
+}
+
 Canvas::Canvas(QWidget *parent)
     : QWidget(parent)
 {
@@ -10706,8 +10383,8 @@ Canvas::Canvas(QWidget *parent)
     setAutoFillBackground(false);
     m_translate = QPointF(40, 40);
 
-    // Tablet proximity events go to the application object, so we watch them
-    // via an app-level filter to drive laser vanishing mode.
+    // Tablet proximity events are delivered to the application object, so we
+    // watch them via an app-level filter to drive laser vanishing mode.
     qApp->installEventFilter(this);
 
     m_fadeTimer = new QTimer(this);
@@ -10727,15 +10404,16 @@ void Canvas::setDocument(Document *doc)
             m_doc->undoStack()->disconnect(this);
     }
     m_doc = doc;
+    stopVanish();
     cancelActive();
     m_selection.clear();
 
     if (m_doc) {
         connect(m_doc, &Document::currentPageChanged, this, [this](int) {
-            cancelActive(); m_selection.clear(); stopVanish(); update();
+            stopVanish(); cancelActive(); m_selection.clear(); update();
         });
         connect(m_doc, &Document::pagesChanged, this, [this]() {
-            cancelActive(); m_selection.clear(); stopVanish(); update();
+            stopVanish(); cancelActive(); m_selection.clear(); update();
         });
         connect(m_doc, &Document::contentChanged, this, [this]() { update(); });
         if (m_doc->undoStack()) {
@@ -10756,51 +10434,19 @@ void Canvas::setTool(ToolId t)
     update();
 }
 
-// ---- laser ink helpers -----------------------------------------------------
-bool Canvas::hasLaserInk()
-{
-    if (!m_doc)
-        return false;
-    for (const auto &it : m_doc->current().active().items)
-        if (it->type() == ItemType::Stroke &&
-            static_cast<StrokeItem *>(it.get())->laser)
-            return true;
-    return false;
-}
-
-void Canvas::removeLaserInk(const QString &text)
-{
-    if (!m_doc)
-        return;
-    Layer &ly = m_doc->current().active();
-    std::vector<Item *> targets;
-    for (auto &it : ly.items)
-        if (it->type() == ItemType::Stroke &&
-            static_cast<StrokeItem *>(it.get())->laser)
-            targets.push_back(it.get());
-    if (targets.empty())
-        return;
-    for (Item *t : targets)
-        removeFromSelection(t);
-    m_doc->undoStack()->push(new RemoveItemsCommand(
-        m_doc, m_doc->currentIndex(), m_doc->current().activeLayer,
-        std::move(targets), text));
-}
-
 void Canvas::clearLaser()
 {
+    // Laser ink is now real strokes; Esc only cancels a pending vanish fade.
     stopVanish();
-    removeLaserInk(QStringLiteral("Clear laser"));
     update();
 }
 
-// ---- laser vanishing (fades real strokes, then removes them) ---------------
+// ---- laser vanishing -------------------------------------------------------
 void Canvas::startVanish()
 {
-    if (!hasLaserInk())
+    if (!m_doc || !layerHasEphemeral(m_doc->current().active()))
         return;
     m_fading = true;
-    m_laserFadeAlpha = 1.0;
     m_fadeClock.restart();
     if (!m_fadeTimer->isActive())
         m_fadeTimer->start();
@@ -10809,8 +10455,9 @@ void Canvas::startVanish()
 
 void Canvas::stopVanish()
 {
+    if (!m_fading)
+        return;
     m_fading = false;
-    m_laserFadeAlpha = 1.0;
     if (m_fadeTimer->isActive())
         m_fadeTimer->stop();
     update();
@@ -10818,41 +10465,46 @@ void Canvas::stopVanish()
 
 void Canvas::onFadeTick()
 {
-    if (!m_fading) {
-        m_fadeTimer->stop();
-        return;
-    }
-    const qint64 el  = m_fadeClock.elapsed();
-    const int delay  = qMax(0, m_settings.laser.vanishDelayMs);
-    const int dur    = qMax(1, m_settings.laser.fadeDurationMs);
-
-    if (el <= delay) {
-        m_laserFadeAlpha = 1.0;
-        update();
-        return;
-    }
-    const double t = static_cast<double>(el - delay) / static_cast<double>(dur);
-    if (t >= 1.0) {
+    if (!m_fading || !m_doc) {
         m_fading = false;
-        m_laserFadeAlpha = 1.0;
         m_fadeTimer->stop();
-        removeLaserInk(QStringLiteral("Laser vanished"));
-        update();
         return;
     }
-    m_laserFadeAlpha = 1.0 - t;
+    const qint64 el = m_fadeClock.elapsed();
+    const int delay = qMax(0, m_settings.laser.vanishDelayMs);
+    const int dur   = qMax(1, m_settings.laser.fadeDurationMs);
+
+    if (el < static_cast<qint64>(delay) + dur) {
+        update();               // still fading; paintEvent computes the alpha
+        return;
+    }
+
+    // Fade complete: remove the ephemeral (vanishing) strokes for real, through
+    // the undo system so nothing dangles and it stays consistent with the pen.
+    m_fading = false;
+    m_fadeTimer->stop();
+
+    Layer &ly = m_doc->current().active();
+    std::vector<Item *> targets;
+    for (auto &it : ly.items)
+        if (it->type() == ItemType::Stroke &&
+            static_cast<StrokeItem *>(it.get())->ephemeral)
+            targets.push_back(it.get());
+
+    if (!targets.empty())
+        m_doc->undoStack()->push(new RemoveItemsCommand(
+            m_doc, m_doc->currentIndex(), m_doc->current().activeLayer,
+            std::move(targets), QStringLiteral("Laser vanish")));
     update();
 }
 
 bool Canvas::eventFilter(QObject *obj, QEvent *ev)
 {
     if (ev->type() == QEvent::TabletLeaveProximity) {
-        if (m_settings.tool == ToolId::Laser && m_settings.laser.vanishMode &&
-            !m_drawing)
-            startVanish();
+        if (m_settings.tool == ToolId::Laser && m_settings.laser.vanishMode && !m_drawing)
+            startVanish();                 // no-op if there is no ephemeral ink
     } else if (ev->type() == QEvent::TabletEnterProximity) {
-        if (m_fading)
-            stopVanish();
+        stopVanish();                      // no-op if not currently fading
     }
     return QWidget::eventFilter(obj, ev);
 }
@@ -11016,23 +10668,26 @@ void Canvas::paintEvent(QPaintEvent *)
     p.setRenderHint(QPainter::Antialiasing, true);
     p.setRenderHint(QPainter::TextAntialiasing, true);
 
+    // Vanish fade multiplier, applied only to ephemeral (vanishing) laser ink.
+    const double vanishFade = m_fading
+        ? fadeAlphaFor(m_fadeClock.elapsed(),
+                       qMax(0, m_settings.laser.vanishDelayMs),
+                       qMax(1, m_settings.laser.fadeDurationMs))
+        : 1.0;
+
     for (const auto &ly : pg.layers) {
         if (!ly.visible)
             continue;
-        const double layerOp = (ly.opacity < 1.0) ? ly.opacity : 1.0;
+        const double layerOpacity = ly.opacity < 1.0 ? ly.opacity : 1.0;
         for (const auto &it : ly.items) {
-            double op = layerOp;
-            if (m_fading && it->type() == ItemType::Stroke &&
-                static_cast<const StrokeItem *>(it.get())->laser)
-                op *= m_laserFadeAlpha;
-            if (op < 1.0) {
-                p.save();
-                p.setOpacity(op);
-                it->paint(p);
-                p.restore();
-            } else {
-                it->paint(p);
-            }
+            double o = layerOpacity;
+            if (vanishFade < 1.0 && it->type() == ItemType::Stroke &&
+                static_cast<const StrokeItem *>(it.get())->ephemeral)
+                o *= vanishFade;
+            p.save();
+            p.setOpacity(o);
+            it->paint(p);
+            p.restore();
         }
     }
 
@@ -11152,7 +10807,7 @@ void Canvas::keyPressEvent(QKeyEvent *e)
     if (e->key() == Qt::Key_Escape) {
         cancelActive();
         clearSelection();
-        stopVanish();
+        clearLaser();
         e->accept();
         return;
     }
@@ -11188,15 +10843,16 @@ void Canvas::handlePointer(Action a, const QPointF &widgetPos, double pressure,
 
     const ToolId t = eraserTip ? ToolId::Eraser : m_settings.tool;
 
-    // Laser: a real glow stroke on the active layer in BOTH modes, so it is
-    // fully erasable / undoable / selectable / saveable like the pen. In
-    // vanishing mode it also auto-removes when the pen leaves range.
     if (t == ToolId::Laser) {
+        // In BOTH modes the laser is a real glow stroke on the active layer, so
+        // it can be erased, undone, selected and saved exactly like the pen.
+        // Vanishing mode only tags it 'ephemeral' so it fades + removes itself
+        // when the pen later leaves the tablet's range.
         Layer &lly = m_doc->current().active();
         if (lly.locked)
             return;
         if (a == Action::Press) {
-            stopVanish();
+            stopVanish();                 // a new stroke cancels any pending fade
             m_drawing = true;
             m_activeStroke = std::make_unique<StrokeItem>();
             m_activeStroke->highlighter   = false;
@@ -11207,7 +10863,7 @@ void Canvas::handlePointer(Action a, const QPointF &widgetPos, double pressure,
             m_activeStroke->glow          = m_settings.laser.glowEnabled;
             m_activeStroke->glowColor     = m_settings.laser.glowColor;
             m_activeStroke->glowRadius    = m_settings.laser.glowRadius;
-            m_activeStroke->laser         = true;
+            m_activeStroke->ephemeral     = m_settings.laser.vanishMode;
             m_activeStroke->addPoint(StrokePoint(sp.x(), sp.y(), pressure));
             update();
         } else if (a == Action::Move && m_drawing && m_activeStroke) {
@@ -11563,4 +11219,4 @@ void Canvas::updateCursor()
 } // namespace ib
 EOF
 
-log "PART 13 complete: laser is real erasable ink in both modes; vanishing mode fades then auto-removes it on pen-leave"
+log "PART 13 complete: vanishing laser is a real pen-like stroke (erasable/undoable) that fades away when the pen leaves range"
