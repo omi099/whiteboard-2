@@ -13,14 +13,17 @@ jobs:
     runs-on: windows-2022
 
     steps:
+      # 1) Get the repo (contains setup.sh)
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 2) MSVC compiler environment (also makes cl available to setup.sh checks)
       - name: Set up MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
+      # 3) Install Qt 6 (with the PDF + extra image-format add-ons the app uses)
       - name: Install Qt 6
         uses: jurplel/install-qt-action@v4
         with:
@@ -31,16 +34,36 @@ jobs:
           modules: 'qtpdf qtimageformats'
           cache: true
 
+      # 4) Generate the project by running setup.sh (creates ./pen-whiteboard)
       - name: Generate project (run setup.sh)
         shell: bash
         run: bash setup.sh
 
+      # 5) Fail fast if setup.sh was assembled wrong (each PART must appear once)
+      - name: Check setup.sh assembly (each PART exactly once)
+        shell: bash
+        run: |
+          ok=1
+          for n in 1 2 3 4 5 6; do
+            c=$(grep -cE "PART[[:space:]]+$n[[:space:]]+complete" setup.sh || true)
+            printf 'PART %s completion markers: %s\n' "$n" "$c"
+            if [ "$c" -ne 1 ]; then
+              echo "  !! PART $n should appear exactly once (found $c)"
+              ok=0
+            fi
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo ""
+            echo ">>> setup.sh is not assembled correctly."
+            echo ">>> Ensure PARTs 1-6 are each present exactly once, in order."
+            exit 1
+          fi
+          echo "setup.sh assembly OK (PARTs 1-6 each present once)."
+
+      # 6) Verify every required source file was actually generated
       - name: Verify generated sources
         shell: bash
         run: |
-          echo "===== PART markers found in setup.sh ====="
-          grep -nE "PART[[:space:]]*[1-6]" setup.sh || echo "!! No PART markers found"
-          echo
           echo "===== Generated source tree ====="
           find pen-whiteboard/src -type f 2>/dev/null | sort || echo "!! no pen-whiteboard/src dir"
           echo
@@ -69,21 +92,36 @@ jobs:
           if [ "$missing" = "1" ]; then
             echo
             echo ">>> Your setup.sh did not create the files above."
-            echo ">>> That means the PART(s) defining them are absent from setup.sh."
+            echo ">>> The PART(s) defining them are absent from setup.sh."
             exit 1
           fi
           echo "OK: all required source files were generated."
 
+      # 7) Configure with the Visual Studio generator
       - name: Configure (Visual Studio 2022, x64)
         working-directory: pen-whiteboard
         shell: pwsh
         run: cmake -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release
 
+      # 8) Build; on failure, print ONLY the real error lines so they're easy to copy
       - name: Build (Release)
         working-directory: pen-whiteboard
         shell: pwsh
-        run: cmake --build build --config Release --parallel
+        run: |
+          $ErrorActionPreference = "Continue"
+          $log = "build.log"
+          cmake --build build --config Release --parallel 2>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            Write-Host "==================== BUILD ERRORS ===================="
+            Select-String -Path $log -Pattern 'error (C|LNK)\d+|error:|unresolved external|cannot open' `
+              | ForEach-Object { $_.Line.Trim() } `
+              | Select-Object -Unique
+            Write-Host "======================================================"
+            exit 1
+          }
 
+      # 9) Bundle Qt runtime + plugins + VC redist next to the exe
       - name: Deploy Qt runtime (windeployqt)
         working-directory: pen-whiteboard
         shell: pwsh
@@ -92,6 +130,7 @@ jobs:
           Copy-Item "build/bin/Release/InkBoard.exe" "dist/"
           windeployqt --release --compiler-runtime "dist/InkBoard.exe"
 
+      # 10) Build the NSIS installer
       - name: Build installer (NSIS)
         working-directory: pen-whiteboard
         shell: pwsh
@@ -99,6 +138,7 @@ jobs:
           choco install nsis -y --no-progress
           & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" packaging/installer.nsi
 
+      # 11) Upload artifacts
       - name: Upload portable build (exe + Qt runtime)
         uses: actions/upload-artifact@v4
         with:
@@ -112,3 +152,12 @@ jobs:
           name: InkBoard-windows-installer
           path: pen-whiteboard/InkBoard-Setup.exe
           if-no-files-found: error
+
+      # 12) Always keep the raw build log for debugging
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: pen-whiteboard/build.log
+          if-no-files-found: ignore
