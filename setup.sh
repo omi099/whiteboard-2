@@ -5041,5 +5041,16 @@ EOF
 # ---------------------------------------------------------------------------
 #  Wire the Laser tool into MainWindow (targeted, anchored edits).
 # ---------------------------------------------------------------------------
-# 1) Add the Laser tool button/shortcut (K) to the tool table.
-sed -i 's|        { ToolId::Text,        "Text",        "T" },|        { ToolId::Text,        "Text",        "T" },\n        { ToolId::Laser,       "Laser",       "K" },|' src/
+# 1) Add the Laser tool button + shortcut (K) to the tool table.
+sed -i 's|        { ToolId::Text,        "Text",        "T" },|        { ToolId::Text,        "Text",        "T" },\n        { ToolId::Laser,       "Laser",       "K" },|' src/ui/MainWindow.cpp
+
+# 2) Route the toolbar color swatches to the laser core color when active.
+sed -i 's|    default:                  s.penColor = c; break;|    case ToolId::Laser:       s.laser.coreColor = c; break;\n    default:                  s.penColor = c; break;|' src/ui/MainWindow.cpp
+
+# 3) Route the toolbar width spinbox to the laser core width when active.
+sed -i 's|    default:                  s.penWidth = w; break;|    case ToolId::Laser:       s.laser.width = w; break;\n    default:                  s.penWidth = w; break;|' src/ui/MainWindow.cpp
+
+# 4) Report the laser width back to the toolbar spinbox when the tool is picked.
+sed -i 's|    default:                  return s.penWidth;|    case ToolId::Laser:       return s.laser.width;\n    default:                  return s.penWidth;|' src/ui/MainWindow.cpp
+
+log "PART 8 complete: laser pointer tool added (core + glow + fade, fully customizable)"
