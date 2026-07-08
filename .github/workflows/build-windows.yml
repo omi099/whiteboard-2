@@ -1,142 +1,114 @@
-name: Build Windows EXE
+name: Build Windows
 
 on:
   push:
     branches: [ main, master ]
   pull_request:
-    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
-  windows:
-    name: Windows x64 (MSVC)
+  build:
     runs-on: windows-2022
 
     steps:
-      # 1) Get the repo (contains setup.sh)
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2) MSVC compiler environment (also makes cl available to setup.sh checks)
-      - name: Set up MSVC environment
+      - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
-      # 3) Install Qt 6 (with the PDF + extra image-format add-ons the app uses)
-      - name: Install Qt 6
+      - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.7.2'
           host: windows
           target: desktop
           arch: win64_msvc2019_64
-          modules: 'qtpdf qtimageformats'
+          modules: qtpdf qtimageformats
           cache: true
 
-      # 4) Generate the project by running setup.sh (creates ./pen-whiteboard)
-      - name: Generate project (run setup.sh)
+      - name: Generate sources (setup.sh)
         shell: bash
         run: bash setup.sh
 
-      # 5) Verify every required source file was actually generated
       - name: Verify generated sources
         shell: bash
         run: |
-          echo "===== Generated source tree ====="
-          find pen-whiteboard/src -type f 2>/dev/null | sort || echo "!! no pen-whiteboard/src dir"
-          echo
-          echo "===== Checking required source files ====="
+          cd pen-whiteboard
           missing=0
-          req="
-            src/app/main.cpp src/app/MainWindow.cpp
-            src/model/Item.cpp src/model/StrokeItem.cpp src/model/ShapeItem.cpp
-            src/model/TextItem.cpp src/model/ImageItem.cpp src/model/Layer.cpp
-            src/model/Page.cpp src/model/Document.cpp src/model/History.cpp
-            src/ink/Smoothing.cpp src/ink/Tessellator.cpp
-            src/render/CanvasRenderer.cpp src/render/Viewport.cpp src/render/CanvasWidget.cpp
-            src/input/InputRouter.cpp src/input/PressureCurve.cpp
-            src/tools/ToolManager.cpp src/tools/PenTool.cpp src/tools/HighlighterTool.cpp
-            src/tools/EraserTool.cpp src/tools/SelectTool.cpp src/tools/ShapeTool.cpp
-            src/tools/TextTool.cpp src/tools/ImageTool.cpp src/tools/LaserTool.cpp
-            src/io/BoardSerializer.cpp src/io/Exporters.cpp src/io/PdfImporter.cpp
-            src/io/AutosaveManager.cpp
-            src/ui/ToolBarWidget.cpp src/ui/ColorPalette.cpp src/ui/PreferencesDialog.cpp
-            src/ui/ThemeManager.cpp src/ui/ShortcutManager.cpp
-            src/util/Log.cpp src/util/Settings.cpp
-          "
-          for f in $req; do
-            if [ ! -f "pen-whiteboard/$f" ]; then echo "MISSING: $f"; missing=1; fi
+          for f in \
+            CMakeLists.txt \
+            src/main.cpp \
+            src/model/Types.h src/model/Item.h src/model/StrokeItem.h \
+            src/model/ShapeItem.h src/model/TextItem.h src/model/ImageItem.h \
+            src/model/Layer.h src/model/Page.h src/model/Document.h \
+            src/model/Item.cpp src/model/StrokeItem.cpp src/model/ShapeItem.cpp \
+            src/model/TextItem.cpp src/model/ImageItem.cpp src/model/Document.cpp \
+            src/core/Settings.h src/core/Serializer.h src/core/Commands.h src/core/Exporter.h \
+            src/core/Serializer.cpp src/core/Commands.cpp src/core/Exporter.cpp \
+            src/canvas/Tools.h src/canvas/Canvas.h src/canvas/Canvas.cpp \
+            src/ui/MainWindow.h src/ui/PreferencesDialog.h \
+            src/ui/MainWindow.cpp src/ui/PreferencesDialog.cpp \
+            packaging/installer.nsi README.md
+          do
+            if [ ! -f "$f" ]; then echo "MISSING: $f"; missing=1; fi
           done
-          if [ "$missing" = "1" ]; then
-            echo
-            echo ">>> Your setup.sh did not create the files above."
-            echo ">>> The PART(s) defining them are absent from setup.sh."
+          if [ "$missing" -ne 0 ]; then
+            echo ">>> Source verification FAILED."
             exit 1
           fi
-          echo "OK: all required source files were generated."
+          echo "All expected sources are present."
 
-      # 6) Configure with the Visual Studio generator
-      - name: Configure (Visual Studio 2022, x64)
+      - name: Configure
         working-directory: pen-whiteboard
-        shell: pwsh
         run: cmake -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release
 
-      # 7) Build; on failure, print ONLY the real error lines so they're easy to copy
-      - name: Build (Release)
+      - name: Build
         working-directory: pen-whiteboard
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Continue"
-          $log = "build.log"
-          cmake --build build --config Release --parallel 2>&1 | Tee-Object -FilePath $log
-          $code = $LASTEXITCODE
-          if ($code -ne 0) {
+          cmake --build build --config Release 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) {
             Write-Host "==================== BUILD ERRORS ===================="
-            Select-String -Path $log -Pattern 'error (C|LNK)\d+|error:|unresolved external|cannot open' `
-              | ForEach-Object { $_.Line.Trim() } `
-              | Select-Object -Unique
-            Write-Host "======================================================"
+            Select-String -Path build.log -Pattern "error (C|LNK)\d+|error:|unresolved external|cannot open" |
+              ForEach-Object { $_.Line }
             exit 1
           }
 
-      # 8) Bundle Qt runtime + plugins + VC redist next to the exe
-      - name: Deploy Qt runtime (windeployqt)
+      - name: Deploy Qt runtime
         working-directory: pen-whiteboard
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item "build/bin/Release/InkBoard.exe" "dist/"
-          windeployqt --release --compiler-runtime "dist/InkBoard.exe"
+          Copy-Item build/bin/Release/InkBoard.exe dist/
+          windeployqt --release --compiler-runtime dist/InkBoard.exe
 
-      # 9) Build the NSIS installer
-      - name: Build installer (NSIS)
+      - name: Package installer (NSIS)
         working-directory: pen-whiteboard
         shell: pwsh
         run: |
           choco install nsis -y --no-progress
           & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" packaging/installer.nsi
 
-      # 10) Upload artifacts
-      - name: Upload portable build (exe + Qt runtime)
+      - name: Upload portable build
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: InkBoard-windows-portable
+          name: InkBoard-portable
           path: pen-whiteboard/dist/**
-          if-no-files-found: error
 
       - name: Upload installer
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: InkBoard-windows-installer
+          name: InkBoard-Setup
           path: pen-whiteboard/InkBoard-Setup.exe
-          if-no-files-found: error
 
-      # 11) Always keep the raw build log for debugging
       - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-log
           path: pen-whiteboard/build.log
-          if-no-files-found: ignore
