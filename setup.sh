@@ -15501,3 +15501,40 @@ perl -0777 -i -pe 'BEGIN{$t=$ENV{TB_TOGGLE}} s/(toolBar->addAction\(pair\.second
 grep -q "toolBar->addAction(m_nbDock->toggleViewAction());" src/ui/MainWindow.cpp || { echo "PART 26 ERROR: toolbar toggle not inserted"; exit 1; }
 
 log "PART 26 complete: Notebook sidebar can be reopened (toolbar button + Ctrl+B)"
+
+# ============================================================
+# PART 27 — Pen pressure on/off checkbox (Preferences + persistence)
+# ============================================================
+log "PART 27: adding pen pressure toggle"
+
+# --- PreferencesDialog.h: checkbox member ---
+grep -qF "m_penPressure" src/ui/PreferencesDialog.h || \
+perl -0777 -i -pe 's{(QPushButton\s*\*\s*m_penColorBtn\s*=\s*nullptr;)}{$1\n\tQCheckBox      *m_penPressure   = nullptr;}' src/ui/PreferencesDialog.h
+grep -qF "m_penPressure" src/ui/PreferencesDialog.h || { echo "PART 27 ERROR: PreferencesDialog.h member not added"; exit 1; }
+
+# --- PreferencesDialog.cpp: create the checkbox under "Pen color" ---
+PREF_PRESSURE=$(cat <<'CPP'
+	m_penPressure = new QCheckBox(tr("Pen pressure sensitivity"), this);
+	m_penPressure->setChecked(m_settings.penPressure);
+	form->addRow(QString(), m_penPressure);
+CPP
+)
+export PREF_PRESSURE
+grep -qF "Pen pressure sensitivity" src/ui/PreferencesDialog.cpp || \
+perl -0777 -i -pe 'BEGIN{$b=$ENV{PREF_PRESSURE}} s{(form->addRow\(tr\("Pen color:"\), m_penColorBtn\);)}{$1\n$b}' src/ui/PreferencesDialog.cpp
+grep -qF "Pen pressure sensitivity" src/ui/PreferencesDialog.cpp || { echo "PART 27 ERROR: checkbox not created"; exit 1; }
+
+# --- PreferencesDialog.cpp: write it back on OK ---
+grep -qF "m_settings.penPressure  = m_penPressure->isChecked();" src/ui/PreferencesDialog.cpp || \
+perl -0777 -i -pe 's{(m_settings\.penColor\s*=\s*m_penColor;)}{$1\n\tm_settings.penPressure  = m_penPressure->isChecked();}' src/ui/PreferencesDialog.cpp
+grep -qF "m_settings.penPressure  = m_penPressure->isChecked();" src/ui/PreferencesDialog.cpp || { echo "PART 27 ERROR: applyAndAccept not patched"; exit 1; }
+
+# --- MainWindow.cpp: persist the flag across sessions ---
+grep -qF 'Settings::get<bool>(QStringLiteral("pen/pressure")' src/ui/MainWindow.cpp || \
+perl -0777 -i -pe 's{(s\.penWidth\s*=\s*Settings::get<double>\(QStringLiteral\("pen/width"\),\s*s\.penWidth\);)}{$1\n\ts.penPressure = Settings::get<bool>(QStringLiteral("pen/pressure"), s.penPressure);}' src/ui/MainWindow.cpp
+grep -qF 'Settings::set<bool>(QStringLiteral("pen/pressure")' src/ui/MainWindow.cpp || \
+perl -0777 -i -pe 's{(Settings::set<double>\(QStringLiteral\("pen/width"\),\s*s\.penWidth\);)}{$1\n\tSettings::set<bool>(QStringLiteral("pen/pressure"), s.penPressure);}' src/ui/MainWindow.cpp
+grep -qF 'Settings::get<bool>(QStringLiteral("pen/pressure")' src/ui/MainWindow.cpp || { echo "PART 27 ERROR: load persistence missing"; exit 1; }
+grep -qF 'Settings::set<bool>(QStringLiteral("pen/pressure")' src/ui/MainWindow.cpp || { echo "PART 27 ERROR: save persistence missing"; exit 1; }
+
+log "PART 27 complete: pen pressure sensitivity checkbox added"
