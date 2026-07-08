@@ -15164,3 +15164,80 @@ int main(int argc, char **argv)
 EOF
 
 log "PART 18 complete: tool buttons, menus and tooltips are always readable (dark text; high-contrast checked/hover states)"
+
+
+# ---------------------------------------------------------------------------
+#  PART 19 : Navigation fixes.
+#    (1) Bare mouse wheel / two-finger trackpad scroll now PANS (vertical and
+#        horizontal) instead of zooming. Zoom moves to Ctrl + wheel.
+#    (2) Arrow keys pan the view (Shift = faster). 
+#    Patches only Canvas::wheelEvent and Canvas::keyPressEvent in place.
+# ---------------------------------------------------------------------------
+log "PART 19: scroll-to-pan + arrow-key panning (Ctrl+wheel = zoom)"
+
+# --- (1) replace the whole wheelEvent body -------------------------------
+NEW_WHEEL=$(cat <<'CPP'
+void Canvas::wheelEvent(QWheelEvent *e)
+{
+	// Ctrl / Cmd + wheel = zoom. Bare wheel or two-finger scroll = pan.
+	if (e->modifiers() & (Qt::ControlModifier | Qt::MetaModifier)) {
+		const QPoint ad = e->angleDelta();
+		const int dz = (ad.y() != 0) ? ad.y() : ad.x();
+		if (dz != 0)
+			zoomAround(e->position(), std::pow(1.0015, dz));
+		e->accept();
+		return;
+	}
+
+	QPointF delta;
+	const QPoint pd = e->pixelDelta();
+	if (!pd.isNull()) {
+		delta = QPointF(pd);                          // trackpad: pixel-precise
+	} else {
+		const QPoint ad = e->angleDelta();            // wheel: ~48px per notch
+		delta = QPointF(ad.x(), ad.y()) * (48.0 / 120.0);
+	}
+
+	// Vertical-only wheels: hold Shift to scroll sideways.
+	if ((e->modifiers() & Qt::ShiftModifier) && qFuzzyIsNull(delta.x()))
+		delta = QPointF(delta.y(), 0.0);
+
+	if (!delta.isNull()) {
+		m_translate += delta;
+		update();
+		emit viewChanged();
+	}
+	e->accept();
+}
+CPP
+)
+export NEW_WHEEL
+perl -0777 -i -pe 'BEGIN{$r=$ENV{NEW_WHEEL}} s/void\s+Canvas::wheelEvent\s*\(\s*QWheelEvent\s*\*\s*e\s*\)\s*\{.*?\n\}/$r/s' src/canvas/Canvas.cpp
+grep -q "e->pixelDelta()" src/canvas/Canvas.cpp \
+	|| { echo "PART 19 ERROR: wheelEvent patch did not apply"; exit 1; }
+
+# --- (2) insert arrow-key panning before the base keyPressEvent call -----
+NEW_ARROW=$(cat <<'CPP'
+	if (e->key() == Qt::Key_Left || e->key() == Qt::Key_Right ||
+	    e->key() == Qt::Key_Up   || e->key() == Qt::Key_Down) {
+		const double step = (e->modifiers() & Qt::ShiftModifier) ? 240.0 : 60.0;
+		QPointF d;
+		if (e->key() == Qt::Key_Left)  d.setX( step);
+		if (e->key() == Qt::Key_Right) d.setX(-step);
+		if (e->key() == Qt::Key_Up)    d.setY( step);
+		if (e->key() == Qt::Key_Down)  d.setY(-step);
+		m_translate += d;
+		update();
+		emit viewChanged();
+		e->accept();
+		return;
+	}
+	QWidget::keyPressEvent(e);
+CPP
+)
+export NEW_ARROW
+perl -0777 -i -pe 'BEGIN{$r=$ENV{NEW_ARROW}} s/\n[ \t]*QWidget::keyPressEvent\s*\(\s*e\s*\)\s*;/\n$r/s' src/canvas/Canvas.cpp
+grep -q "Qt::Key_Left" src/canvas/Canvas.cpp \
+	|| { echo "PART 19 ERROR: arrow-key patch did not apply"; exit 1; }
+
+log "PART 19 complete: bare wheel/two-finger scroll pans (H+V), Ctrl+wheel zooms, arrow keys pan (Shift = faster)"
