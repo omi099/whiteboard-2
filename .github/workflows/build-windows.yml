@@ -29,7 +29,11 @@ jobs:
           modules: qtpdf qtimageformats
           cache: true
 
-      - name: Export laser source files to a text file
+      - name: Generate sources (setup.sh)
+        shell: bash
+        run: bash setup.sh
+
+        - name: Export laser source files to a text file
         if: always()
         shell: bash
         run: |
@@ -59,10 +63,6 @@ jobs:
           path: laser_files.txt
           if-no-files-found: error
           retention-days: 7
-
-      - name: Generate sources (setup.sh)
-        shell: bash
-        run: bash setup.sh
 
       - name: Verify generated sources
         shell: bash
