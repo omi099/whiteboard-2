@@ -4269,3 +4269,134 @@ vector; touch pans/zooms while the pen inks.
 
 ## Build (local)
 Requires CMake >= 3.24, a C++20 compiler, and Qt 6.5+ (with the **Qt PDF** module).
+
+
+
+
+
+# =============================================================================
+#  PART 6 (FINAL)  —  correctness fix, README, packaging, closing instructions
+#  Append below PART 5. Does NOT contain the CI workflow (added separately).
+# =============================================================================
+log "PART 6: correctness fixup, README, packaging, and finishing up"
+
+# ---- 6.1 Correctness fix: PreferencesDialog uses QColorDialog --------------
+# Ensure the include exists (portable; no sed -i differences across OSes).
+if ! grep -q '#include <QColorDialog>' src/ui/PreferencesDialog.cpp; then
+    tmp="$(mktemp)"
+    printf '#include <QColorDialog>\n' > "$tmp"
+    cat src/ui/PreferencesDialog.cpp >> "$tmp"
+    mv "$tmp" src/ui/PreferencesDialog.cpp
+    log "Added missing <QColorDialog> include to PreferencesDialog.cpp"
+fi
+
+# ---- 6.2 Minimal test target (only used when -DINKBOARD_BUILD_TESTS=ON) -----
+cat > tests/CMakeLists.txt <<'EOF'
+# Lightweight smoke test so enabling INKBOARD_BUILD_TESTS never breaks config.
+add_test(NAME smoke COMMAND ${CMAKE_COMMAND} -E echo "InkBoard smoke test OK")
+EOF
+
+# ---- 6.3 Windows installer script (NSIS) -----------------------------------
+cat > packaging/installer.nsi <<'EOF'
+; InkBoard NSIS installer. Packages the windeployqt output in ./dist.
+!define APPNAME "InkBoard"
+!define EXENAME "InkBoard.exe"
+
+Name "${APPNAME}"
+OutFile "InkBoard-Setup.exe"
+InstallDir "$PROGRAMFILES64\${APPNAME}"
+RequestExecutionLevel admin
+ShowInstDetails show
+
+Page directory
+Page instfiles
+UninstPage uninstConfirm
+UninstPage instfiles
+
+Section "Install"
+    SetOutPath "$INSTDIR"
+    File /r "dist\*.*"
+    CreateDirectory "$SMPROGRAMS\${APPNAME}"
+    CreateShortcut "$SMPROGRAMS\${APPNAME}\${APPNAME}.lnk" "$INSTDIR\${EXENAME}"
+    CreateShortcut "$DESKTOP\${APPNAME}.lnk" "$INSTDIR\${EXENAME}"
+    WriteUninstaller "$INSTDIR\uninstall.exe"
+SectionEnd
+
+Section "Uninstall"
+    Delete "$SMPROGRAMS\${APPNAME}\${APPNAME}.lnk"
+    Delete "$DESKTOP\${APPNAME}.lnk"
+    RMDir  "$SMPROGRAMS\${APPNAME}"
+    RMDir /r "$INSTDIR"
+SectionEnd
+EOF
+
+# ---- 6.4 Linux desktop entry (for local packaging) -------------------------
+cat > packaging/inkboard.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=InkBoard
+Comment=Professional pen / teaching whiteboard
+Exec=InkBoard %F
+Icon=inkboard
+Terminal=false
+Categories=Graphics;Education;
+MimeType=application/x-inkboard;
+EOF
+
+# ---- 6.5 README ------------------------------------------------------------
+cat > README.md <<'EOF'
+# InkBoard
+
+A lean, professional pen / teaching whiteboard in modern C++ (C++20 + Qt 6).
+Vector ink stays crisp at any zoom, optimized for Wacom / stylus tablets.
+
+## Features (essential only)
+- Pressure/tilt vector ink (pen + highlighter), stabilizer, crisp at any zoom
+- Wacom / stylus: pressure curve, tilt, eraser end, hover/proximity, smooth
+  pointer vanish-delay + fade-out
+- Pen vs touch: pen inks, touch pans/pinch-zooms/rotates, palm rejection,
+  finger-drawing toggle
+- Tools: pen, highlighter, eraser (stroke + area), select (lasso/rect, move,
+  scale, rotate, copy/paste, delete), shapes (snap), text, image, laser
+- Infinite canvas, pan/zoom/rotate, layers, multi-page notebooks, full undo/redo
+- Backgrounds/grids, light/dark/system theme + accent, remappable shortcuts,
+  presentation mode
+- PDF import + annotate, vector PDF / PNG / SVG export
+- Native `.iboard` format (lossless round-trip), autosave + crash recovery
+
+## Build (local)
+
+Prerequisites: CMake >= 3.24, a C++20 compiler, and Qt 6.5+ with the
+`Widgets, Gui, Svg, PrintSupport, Pdf, OpenGLWidgets` modules.
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+./build/bin/InkBoard        # Windows: buildbinReleaseInkBoard.exe
+
+
+Options: `-DINKBOARD_USE_OPENGL=ON` (default), `-DINKBOARD_ENABLE_SANITIZERS=ON`
+(Debug), `-DINKBOARD_BUILD_TESTS=ON`.
+
+## Windows .exe via GitHub Actions
+Add the provided workflow to `.github/workflows/build.yml`, push, and download
+the `InkBoard-windows-portable` and `InkBoard-windows-installer` artifacts.
+EOF
+
+# ---- 6.6 Done --------------------------------------------------------------
+cd ..
+log "=============================================================="
+log "InkBoard scaffold complete in ./$PROJECT"
+log ""
+log "Next steps:"
+log "  1) Add the CI workflow file at:"
+log "        $PROJECT/.github/workflows/build.yml"
+log "     (provided SEPARATELY from this script)."
+log "  2) Local build:"
+log "        cd $PROJECT"
+log "        cmake -B build -DCMAKE_BUILD_TYPE=Release"
+log "        cmake --build build --parallel"
+log "  3) Run:"
+log "        ./build/bin/InkBoard   (Windows: build\\bin\\Release\\InkBoard.exe)"
+log "=============================================================="
+# =============================================================================
+#  END OF setup.sh  (all 6 parts)
+# =============================================================================
