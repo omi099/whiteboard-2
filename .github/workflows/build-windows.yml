@@ -16,7 +16,7 @@ jobs:
     - name: Execute setup.sh to Generate C++ Architecture
       shell: bash
       run: |
-        # If setup.sh exists, fix Windows line endings (CRLF -> LF) and run it
+        # Fix Windows line endings (CRLF -> LF) and run the script
         if [ -f "setup.sh" ]; then
           sed -i 's/\r$//' setup.sh
           chmod +x setup.sh
@@ -38,12 +38,12 @@ jobs:
       shell: pwsh
       run: |
         $QT_DIR = "${{ github.workspace }}/6.5.3/msvc2019_64"
-        # Navigate to the folder if setup.sh created it; otherwise, stay in root
         if (Test-Path "WhiteboardPro") { cd WhiteboardPro }
         
-        cmake -B build -S . -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_DIR"
+        # Removed the strict -G Visual Studio flag. CMake will safely auto-detect the default compiler.
+        cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_DIR"
 
-    - name: Build Application (MSVC C++20)
+    - name: Build Application
       shell: pwsh
       run: |
         if (Test-Path "WhiteboardPro") { cd WhiteboardPro }
@@ -57,7 +57,6 @@ jobs:
         
         mkdir deploy
         
-        # Copy the EXE from whichever path was built
         if (Test-Path "WhiteboardPro/build/Release/WhiteboardPro.exe") {
             copy WhiteboardPro/build/Release/WhiteboardPro.exe deploy/
         } else {
