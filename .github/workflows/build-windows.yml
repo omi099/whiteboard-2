@@ -3,30 +3,26 @@ name: Build Windows EXE
 on:
   push:
     branches: [ main, master ]
-    tags: [ 'v*' ]
   workflow_dispatch:
 
 jobs:
-  build-windows:
+  build:
     runs-on: windows-latest
-    steps:
-      - name: Checkout (gets setup.sh)
-        uses: actions/checkout@v4
 
-      - name: Scaffold project
-        shell: bash
-        run: |
-          chmod +x setup.sh || true
-          bash setup.sh
-          echo "----- files after scaffold -----"
-          ls -R .
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Set up MSVC (x64)
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
-      - name: Install Qt
+      - name: Install Ninja
+        shell: pwsh
+        run: choco install ninja -y
+
+      - name: Install Qt 6.8.1
         uses: jurplel/install-qt-action@v4
         with:
           version: "6.8.1"
@@ -36,31 +32,38 @@ jobs:
           cache: true
           setup-python: false
 
+      - name: Generate sources (assemble + run setup.sh)
+        shell: bash
+        run: |
+          cat chunk1.sh > setup.sh
+          for c in chunk2.sh chunk3.sh chunk4.sh chunk5.sh; do
+            tail -n +2 "$c" >> setup.sh
+          done
+          chmod +x setup.sh
+          bash setup.sh
+          echo "----- generated tree -----"
+          find src resources CMakeLists.txt -maxdepth 3 -type f | sort
+
       - name: Configure (CMake + Ninja)
+        shell: pwsh
         run: >
-          cmake -S . -B build
-          -G Ninja
+          cmake -B build -G Ninja
           -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR"
 
       - name: Build
-        run: cmake --build build --config Release --parallel
+        shell: pwsh
+        run: cmake --build build
 
-      - name: Deploy Qt runtime (windeployqt)
+      - name: Deploy Qt runtime
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-          $exe = Get-ChildItem -Path build -Recurse -Filter "Whiteboard.exe" | Select-Object -First 1
-          if (-not $exe) { Write-Error "Could not find Whiteboard.exe under build/."; exit 1 }
-          Write-Host "Found exe: $($exe.FullName)"
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item $exe.FullName -Destination dist\
-          & "$env:QT_ROOT_DIR\bin\windeployqt.exe" --release --dir dist --no-translations --compiler-runtime "dist\Whiteboard.exe"
+          Copy-Item build/Whiteboard.exe dist/
+          & "$env:QT_ROOT_DIR\bin\windeployqt.exe" --release --no-translations --no-compiler-runtime dist/Whiteboard.exe
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: Whiteboard-windows-x64
-          path: dist/**
-          if-no-files-found: error
-          retention-days: 14
+          path: dist
