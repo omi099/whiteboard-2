@@ -16,8 +16,12 @@ jobs:
     - name: Execute setup.sh to Generate C++ Architecture
       shell: bash
       run: |
-        chmod +x setup.sh
-        ./setup.sh
+        # If setup.sh exists, fix Windows line endings (CRLF -> LF) and run it
+        if [ -f "setup.sh" ]; then
+          sed -i 's/\r$//' setup.sh
+          chmod +x setup.sh
+          ./setup.sh
+        fi
 
     - name: Install Python
       uses: actions/setup-python@v5
@@ -28,20 +32,21 @@ jobs:
       shell: pwsh
       run: |
         pip install aqtinstall
-        # Removed '-m qtbase' — Core, Gui, and Widgets are included in the default desktop install
         python -m aqt install-qt windows desktop 6.5.3 win64_msvc2019_64
 
     - name: Configure CMake
       shell: pwsh
       run: |
         $QT_DIR = "${{ github.workspace }}/6.5.3/msvc2019_64"
-        cd WhiteboardPro
+        # Navigate to the folder if setup.sh created it; otherwise, stay in root
+        if (Test-Path "WhiteboardPro") { cd WhiteboardPro }
+        
         cmake -B build -S . -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_DIR"
 
     - name: Build Application (MSVC C++20)
       shell: pwsh
       run: |
-        cd WhiteboardPro
+        if (Test-Path "WhiteboardPro") { cd WhiteboardPro }
         cmake --build build --config Release
 
     - name: Package Dependencies (windeployqt)
@@ -51,7 +56,13 @@ jobs:
         $ENV:PATH = "$QT_DIR/bin;" + $ENV:PATH
         
         mkdir deploy
-        copy WhiteboardPro/build/Release/WhiteboardPro.exe deploy/
+        
+        # Copy the EXE from whichever path was built
+        if (Test-Path "WhiteboardPro/build/Release/WhiteboardPro.exe") {
+            copy WhiteboardPro/build/Release/WhiteboardPro.exe deploy/
+        } else {
+            copy build/Release/WhiteboardPro.exe deploy/
+        }
         
         windeployqt --release --no-translations --no-opengl-sw deploy/WhiteboardPro.exe
 
