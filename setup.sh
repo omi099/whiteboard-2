@@ -9104,34 +9104,5 @@ void PreferencesDialog::applyAndAccept()
 
 } // namespace ib
 EOF
-
-- name: Export laser source files to a text file
-  if: always()
-  shell: bash
-  run: |
-    cd "$GITHUB_WORKSPACE/pen-whiteboard"
-    {
-      for f in src/model/Item.h src/model/StrokeItem.h src/model/StrokeItem.cpp src/core/Serializer.cpp; do
-        echo "===================================================================="
-        if [ -f "$f" ]; then
-          echo "===== FILE: $f ====="
-          echo "===================================================================="
-          cat "$f"
-          echo
-        else
-          echo "===== MISSING: $f (not found) ====="
-          echo "===================================================================="
-        fi
-        echo
-      done
-    } > "$GITHUB_WORKSPACE/laser_files.txt"
-    echo "Wrote laser_files.txt"
-
-- name: Upload laser_files.txt (download from the run's Artifacts)
-  if: always()
-  uses: actions/upload-artifact@v4
-  with:
-    name: laser-files
-    path: laser_files.txt
     if-no-files-found: error
     retention-days: 7
