@@ -15322,3 +15322,60 @@ int main(int argc, char **argv)
 EOF
 
 log "PART 21 complete: dark toolbar, white labels, white-on-hover dark text, blue active tool"
+
+# ============================================================
+# PART 24 — restore pen-tip dot, kill the tap rings
+# ============================================================
+log "PART 24: fixing brush preview (tip dot back, no rings)"
+
+BRUSH_BODY=$(cat <<'CPP'
+    if (!m_hoverValid)
+        return;
+
+    // Eraser keeps its dashed ring as the sole size indicator.
+    if (m_settings.tool == ToolId::Eraser) {
+        double r = m_settings.eraserRadius * m_scale;
+        if (r < 4.0)
+            r = 4.0;
+        p.save();
+        p.setRenderHint(QPainter::Antialiasing, true);
+        QPen ring(QColor(90, 90, 90), 1.0, Qt::DashLine);
+        p.setPen(ring);
+        p.setBrush(Qt::NoBrush);
+        p.drawEllipse(m_cursorWidget, r, r);
+        p.restore();
+        return;
+    }
+
+    // These tools show no hover marker at all.
+    if (m_settings.tool == ToolId::Select ||
+        m_settings.tool == ToolId::Laser ||
+        m_settings.tool == ToolId::Text)
+        return;
+
+    // Pen / Highlighter / shape tools: ONE tiny dot marks the exact tip.
+    // No concentric size rings (the tap rings that were confusing).
+    QColor c;
+    switch (m_settings.tool) {
+    case ToolId::Highlighter: c = m_settings.hlColor;    break;
+    case ToolId::Line:
+    case ToolId::Rectangle:
+    case ToolId::Ellipse:     c = m_settings.shapeColor; break;
+    default:                  c = m_settings.penColor;   break;
+    }
+    c.setAlpha(235);
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setPen(Qt::NoPen);
+    p.setBrush(c);
+    p.drawEllipse(m_cursorWidget, 2.5, 2.5);  // sole tip indicator, no rings
+    p.restore();
+CPP
+)
+export BRUSH_BODY
+
+perl -0777 -i -pe 'BEGIN{$b=$ENV{BRUSH_BODY}} s/(void\s+Canvas::drawBrushPreview\s*\([^)]*\)\s*(?:const\s*)?\{).*?\n\}/$1\n$b\n}/s' src/canvas/Canvas.cpp
+
+grep -q "sole tip indicator, no rings" src/canvas/Canvas.cpp || { echo "PART 24 ERROR: drawBrushPreview was not patched"; exit 1; }
+
+log "PART 24 complete: tip dot restored, preview rings removed"
