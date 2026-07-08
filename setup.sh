@@ -1,894 +1,546 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  Pen / Teaching Whiteboard  —  professional vector inking desktop app
-#  Modern C++20 + Qt 6.  Lean, no bloat.  Wacom / stylus optimized.
+#  InkBoard — pen / teaching whiteboard (Qt6)          setup.sh  (REVAMP)
+#  PART 1 of 6 : fresh scaffold, CMake, entry point, core data-model headers
 #
-#  USAGE:
-#     chmod +x setup.sh
-#     ./setup.sh            # scaffolds project into ./pen-whiteboard
-#     cd pen-whiteboard && cmake -B build -G Ninja && cmake --build build
-#
-#  This file is generated in appendable PARTS. Each part is self-contained.
+#  Usage:   bash setup.sh          # generates ./pen-whiteboard
+#  Then configure/build with CMake + Qt6 (see the build.yml delivered in Part 6)
 # =============================================================================
 set -euo pipefail
 
-# ---- 0. Config -------------------------------------------------------------
-PROJECT="${PROJECT:-pen-whiteboard}"
-APP_NAME="InkBoard"
-CXX_STD="20"
+PROJECT="pen-whiteboard"
+log() { printf '\033[1;36m[setup]\033[0m %s\n' "$*"; }
 
-log()  { printf '\033[1;36m[setup]\033[0m %s\n' "$*"; }
-warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*"; }
-die()  { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
+log "PART 1: fresh scaffold + CMake + core model headers"
 
-# ---- 1. Host tooling sanity checks (non-fatal hints) -----------------------
-log "Checking host tooling (hints only; CI installs everything in build.yml)"
-command -v cmake >/dev/null 2>&1 || warn "cmake not found on PATH (needed to build)"
-command -v git   >/dev/null 2>&1 || warn "git not found on PATH (optional)"
-if command -v cmake >/dev/null 2>&1; then
-  log "cmake: $(cmake --version | head -n1)"
-fi
-
-# ---- 2. Directory scaffold -------------------------------------------------
-log "Creating project tree at ./$PROJECT"
-mkdir -p "$PROJECT"/{cmake,src,resources/icons,resources/themes,packaging,.github/workflows,tests}
-mkdir -p "$PROJECT"/src/{app,model,ink,render,input,tools,io,ui,util}
-
+# Start from a clean slate so no stale files from earlier attempts survive.
+rm -rf "$PROJECT"
+mkdir -p "$PROJECT"/src/model
+mkdir -p "$PROJECT"/src/core
+mkdir -p "$PROJECT"/src/canvas
+mkdir -p "$PROJECT"/src/ui
+mkdir -p "$PROJECT"/packaging
 cd "$PROJECT"
 
-# ---- 3. .gitignore ---------------------------------------------------------
-cat > .gitignore <<'EOF'
-/build/
-/build-*/
-/out/
-/dist/
-*.user
-*.autosave
-.DS_Store
-CMakeSettings.json
-compile_commands.json
-EOF
-
-# ---- 4. Top-level CMakeLists.txt ------------------------------------------
+# ---------------------------------------------------------------------------
+#  CMakeLists.txt
+# ---------------------------------------------------------------------------
 cat > CMakeLists.txt <<'EOF'
-cmake_minimum_required(VERSION 3.24)
-project(InkBoard VERSION 0.1.0 LANGUAGES CXX)
+cmake_minimum_required(VERSION 3.21)
+project(InkBoard VERSION 1.0.0 LANGUAGES CXX)
 
-# --- Global build settings --------------------------------------------------
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
-
-if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
-  set(CMAKE_BUILD_TYPE "Release" CACHE STRING "" FORCE)
-endif()
-
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Put binaries in a predictable place for windeployqt / packaging.
+# Put the executable in a predictable place (multi-config -> bin/<Config>/).
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
-# --- Options ----------------------------------------------------------------
-option(INKBOARD_USE_OPENGL "Render canvas through QOpenGLWidget" ON)
-option(INKBOARD_ENABLE_SANITIZERS "Enable ASan/UBSan in Debug" OFF)
-option(INKBOARD_BUILD_TESTS "Build unit tests" OFF)
-
-# --- Qt ---------------------------------------------------------------------
-find_package(Qt6 REQUIRED COMPONENTS
-  Core Gui Widgets Svg PrintSupport Pdf OpenGLWidgets)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Svg PrintSupport)
 
 qt_standard_project_setup()
 
-# --- Warnings / hardening ---------------------------------------------------
-if(MSVC)
-  add_compile_options(/W4 /permissive- /Zc:__cplusplus /utf-8 /EHsc)
-else()
-  add_compile_options(-Wall -Wextra -Wpedantic -Wshadow -Wconversion
-                      -Wno-unknown-pragmas)
-endif()
-
-if(INKBOARD_ENABLE_SANITIZERS AND NOT MSVC)
-  add_compile_options($<$<CONFIG:Debug>:-fsanitize=address,undefined>
-                      $<$<CONFIG:Debug>:-fno-omit-frame-pointer>)
-  add_link_options($<$<CONFIG:Debug>:-fsanitize=address,undefined>)
-endif()
-
-# --- Sources (files are added by later setup.sh parts) ----------------------
 set(INKBOARD_SOURCES
-  src/app/main.cpp
-  src/app/MainWindow.cpp
-  src/model/Item.cpp
-  src/model/StrokeItem.cpp
-  src/model/ShapeItem.cpp
-  src/model/TextItem.cpp
-  src/model/ImageItem.cpp
-  src/model/Layer.cpp
-  src/model/Page.cpp
-  src/model/Document.cpp
-  src/model/History.cpp
-  src/ink/Smoothing.cpp
-  src/ink/Tessellator.cpp
-  src/render/CanvasRenderer.cpp
-  src/render/Viewport.cpp
-  src/render/CanvasWidget.cpp
-  src/input/InputRouter.cpp
-  src/input/PressureCurve.cpp
-  src/tools/ToolManager.cpp
-  src/tools/PenTool.cpp
-  src/tools/HighlighterTool.cpp
-  src/tools/EraserTool.cpp
-  src/tools/SelectTool.cpp
-  src/tools/ShapeTool.cpp
-  src/tools/TextTool.cpp
-  src/tools/ImageTool.cpp
-  src/tools/LaserTool.cpp
-  src/io/BoardSerializer.cpp
-  src/io/Exporters.cpp
-  src/io/PdfImporter.cpp
-  src/io/AutosaveManager.cpp
-  src/ui/ToolBarWidget.cpp
-  src/ui/ColorPalette.cpp
-  src/ui/PreferencesDialog.cpp
-  src/ui/ThemeManager.cpp
-  src/ui/ShortcutManager.cpp
-  src/util/Log.cpp
-  src/util/Settings.cpp
+    src/main.cpp
+    src/model/Item.cpp
+    src/model/StrokeItem.cpp
+    src/model/ShapeItem.cpp
+    src/model/TextItem.cpp
+    src/model/ImageItem.cpp
+    src/model/Document.cpp
+    src/core/Serializer.cpp
+    src/core/Commands.cpp
+    src/core/Exporter.cpp
+    src/canvas/Canvas.cpp
+    src/ui/MainWindow.cpp
+    src/ui/PreferencesDialog.cpp
+)
+
+set(INKBOARD_HEADERS
+    src/model/Types.h
+    src/model/Item.h
+    src/model/StrokeItem.h
+    src/model/ShapeItem.h
+    src/model/TextItem.h
+    src/model/ImageItem.h
+    src/model/Layer.h
+    src/model/Page.h
+    src/model/Document.h
+    src/core/Serializer.h
+    src/core/Commands.h
+    src/core/Exporter.h
+    src/core/Settings.h
+    src/canvas/Tools.h
+    src/canvas/Canvas.h
+    src/ui/MainWindow.h
+    src/ui/PreferencesDialog.h
 )
 
 qt_add_executable(InkBoard WIN32 MACOSX_BUNDLE
-  ${INKBOARD_SOURCES}
-  resources/resources.qrc
+    ${INKBOARD_SOURCES}
+    ${INKBOARD_HEADERS}
 )
 
-target_include_directories(InkBoard PRIVATE src)
+target_include_directories(InkBoard PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 target_compile_definitions(InkBoard PRIVATE
-  INKBOARD_VERSION="${PROJECT_VERSION}"
-  $<$<BOOL:${INKBOARD_USE_OPENGL}>:INKBOARD_USE_OPENGL=1>
-  QT_DISABLE_DEPRECATED_BEFORE=0x060500
+    INKBOARD_VERSION="${PROJECT_VERSION}"
 )
 
 target_link_libraries(InkBoard PRIVATE
-  Qt6::Core Qt6::Gui Qt6::Widgets
-  Qt6::Svg Qt6::PrintSupport Qt6::Pdf Qt6::OpenGLWidgets)
+    Qt6::Core
+    Qt6::Gui
+    Qt6::Widgets
+    Qt6::Svg
+    Qt6::PrintSupport
+)
 
-# --- Install / bundle -------------------------------------------------------
-install(TARGETS InkBoard
-  BUNDLE  DESTINATION .
-  RUNTIME DESTINATION bin)
-
-if(INKBOARD_BUILD_TESTS)
-  enable_testing()
-  add_subdirectory(tests)
+if(MSVC)
+    target_compile_options(InkBoard PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(InkBoard PRIVATE -Wall -Wextra)
 endif()
+
+install(TARGETS InkBoard RUNTIME DESTINATION bin BUNDLE DESTINATION .)
 EOF
 
-# ---- 5. Qt resource file ---------------------------------------------------
-cat > resources/resources.qrc <<'EOF'
-<!DOCTYPE RCC>
-<RCC version="1.0">
-  <qresource prefix="/themes">
-    <file>themes/dark.qss</file>
-    <file>themes/light.qss</file>
-  </qresource>
-</RCC>
-EOF
-
-cat > resources/themes/dark.qss <<'EOF'
-/* Minimal dark theme; accent color is injected at runtime by ThemeManager. */
-QWidget { background: #1e1f22; color: #e6e6e6; }
-QToolBar { background: #26282c; border: none; spacing: 4px; }
-QToolButton { border: none; padding: 6px; border-radius: 6px; }
-QToolButton:hover { background: #33363b; }
-QToolButton:checked { background: #3d5afe33; }
-QMenu, QDialog { background: #26282c; color: #e6e6e6; }
-EOF
-
-cat > resources/themes/light.qss <<'EOF'
-QWidget { background: #f7f7f8; color: #1b1b1b; }
-QToolBar { background: #ffffff; border: none; spacing: 4px; }
-QToolButton { border: none; padding: 6px; border-radius: 6px; }
-QToolButton:hover { background: #ececec; }
-QToolButton:checked { background: #3d5afe22; }
-QMenu, QDialog { background: #ffffff; color: #1b1b1b; }
-EOF
-
-# ---- 6. Application entry point --------------------------------------------
-cat > src/app/main.cpp <<'EOF'
-// InkBoard — application entry point.
+# ---------------------------------------------------------------------------
+#  src/main.cpp
+# ---------------------------------------------------------------------------
+cat > src/main.cpp <<'EOF'
 #include <QApplication>
-#include <QSurfaceFormat>
-#include "app/MainWindow.h"
-#include "util/Log.h"
+#include "ui/MainWindow.h"
 
-int main(int argc, char** argv)
+int main(int argc, char **argv)
 {
-    // High-DPI is automatic in Qt6; we only tune surface format for the
-    // OpenGL canvas so we get MSAA + low-latency single-buffer-ish present.
-    QSurfaceFormat fmt;
-    fmt.setSamples(4);                       // MSAA for crisp geometry edges
-    fmt.setSwapInterval(1);                  // vsync; overridden per-frame later
-    fmt.setDepthBufferSize(0);
-    fmt.setStencilBufferSize(8);
-    QSurfaceFormat::setDefaultFormat(fmt);
-
     QApplication app(argc, argv);
-    QApplication::setApplicationName("InkBoard");
-    QApplication::setOrganizationName("InkBoard");
-    QApplication::setApplicationVersion(INKBOARD_VERSION);
-
-    ib::log::init();
-    ib::log::info("Starting InkBoard %s", INKBOARD_VERSION);
+    QCoreApplication::setOrganizationName("InkBoard");
+    QCoreApplication::setApplicationName("InkBoard");
+#ifdef INKBOARD_VERSION
+    QCoreApplication::setApplicationVersion(INKBOARD_VERSION);
+#endif
+    QApplication::setAttribute(Qt::AA_UseHighDpiPixmaps, true);
 
     ib::MainWindow window;
-    window.resize(1440, 900);
     window.show();
-
     return app.exec();
 }
 EOF
 
-# ---- 7. Utility: logging ---------------------------------------------------
-cat > src/util/Log.h <<'EOF'
+# ---------------------------------------------------------------------------
+#  src/model/Types.h  — shared enums and the fundamental stroke sample
+# ---------------------------------------------------------------------------
+cat > src/model/Types.h <<'EOF'
 #pragma once
-// Tiny leak-free logging shim over qDebug/qWarning with printf-style calls.
-namespace ib::log {
-void init();
-void info(const char* fmt, ...);
-void warn(const char* fmt, ...);
-void error(const char* fmt, ...);
-}
-EOF
 
-cat > src/util/Settings.h <<'EOF'
-#pragma once
-#include <QSettings>
-#include <QString>
-// Thin wrapper so all persisted user prefs go through one typed surface.
-namespace ib {
-class Settings {
-public:
-    static QSettings& raw();
-    template <class T>
-    static T get(const QString& key, const T& def) {
-        return raw().value(key, QVariant::fromValue(def)).template value<T>();
-    }
-    template <class T>
-    static void set(const QString& key, const T& v) {
-        raw().setValue(key, QVariant::fromValue(v));
-    }
-};
-} // namespace ib
-EOF
-
-# ---- 8. Core model: enums & atomic geometry -------------------------------
-cat > src/model/Enums.h <<'EOF'
-#pragma once
-#include <cstdint>
-namespace ib {
-
-// Which concrete Item subclass a base pointer refers to.
-enum class ItemType : uint8_t { Stroke, Shape, Text, Image };
-
-// Ink-bearing tools that produce StrokeItems.
-enum class InkKind : uint8_t { Pen, Highlighter };
-
-// Vector primitives produced by the shape tool.
-enum class ShapeKind : uint8_t { Line, Arrow, Rectangle, Ellipse };
-
-// Page background rendering style.
-enum class BackgroundKind : uint8_t { Blank, Grid, Lines, Dots };
-
-// Which logical tool is active.
-enum class ToolId : uint8_t {
-    Pen, Highlighter, Eraser, Select, Shape, Text, Image, Laser, Pan
-};
-
-// How touch (finger) input behaves relative to pen input.
-enum class TouchMode : uint8_t { GestureOnly, DrawAndGesture, Ignore };
-
-} // namespace ib
-EOF
-
-cat > src/model/StrokePoint.h <<'EOF'
-#pragma once
+#include <QColor>
 #include <QPointF>
-#include <cstdint>
+
 namespace ib {
 
-// One raw sample captured from the pen/pointer pipeline. Kept POD-ish and
-// cache-friendly: strokes hold contiguous vectors of these.
+// Active editing tool.
+enum class ToolId {
+    Pen,
+    Highlighter,
+    Eraser,
+    Select,
+    Line,
+    Rectangle,
+    Ellipse,
+    Text
+};
+
+// Concrete item kinds stored on a layer.
+enum class ItemType {
+    Stroke,
+    Shape,
+    Text,
+    Image
+};
+
+// Vector shape variants.
+enum class ShapeKind {
+    Line,
+    Rectangle,
+    Ellipse
+};
+
+// Page background style.
+enum class BackgroundKind {
+    Blank,
+    Grid,
+    Lines,
+    Dots
+};
+
+// A single sample along an ink stroke, with normalized pressure (0..1).
 struct StrokePoint {
-    QPointF pos;          // position in PAGE coordinates (device-independent)
-    float   pressure = 1.0f;  // 0..1 normalized (post pressure-curve is applied later)
-    float   tiltX    = 0.0f;  // degrees, -60..60
-    float   tiltY    = 0.0f;  // degrees, -60..60
-    qint64  tMs      = 0;     // timestamp (ms) for prediction / speed-based width
+    double x = 0.0;
+    double y = 0.0;
+    double pressure = 1.0;
+
+    StrokePoint() = default;
+    StrokePoint(double px, double py, double pr = 1.0) : x(px), y(py), pressure(pr) {}
+
+    QPointF pos() const { return QPointF(x, y); }
 };
 
 } // namespace ib
 EOF
 
-# ---- 9. Core model: Item base ---------------------------------------------
+# ---------------------------------------------------------------------------
+#  src/model/Item.h  — abstract base for everything drawn on a layer
+# ---------------------------------------------------------------------------
 cat > src/model/Item.h <<'EOF'
 #pragma once
-#include <QUuid>
+
 #include <QRectF>
 #include <QJsonObject>
-#include <QTransform>
 #include <memory>
-#include "model/Enums.h"
+
+#include "model/Types.h"
+
+class QPainter;
 
 namespace ib {
 
-// Abstract base for everything placed on a layer. Data-oriented: rendering is
-// performed by CanvasRenderer (a visitor), not by the item itself, so the
-// model stays free of GUI dependencies beyond Qt value types.
+// Abstract drawable. Concrete items: StrokeItem, ShapeItem, TextItem, ImageItem.
 class Item {
 public:
     virtual ~Item() = default;
 
     virtual ItemType type() const = 0;
-    virtual QRectF   boundingRect() const = 0;      // in page coords, cached by subclass
-    virtual bool     hitTest(const QPointF& p, double tolerance) const = 0;
+    virtual QRectF boundingRect() const = 0;
+    virtual void paint(QPainter &p) const = 0;
     virtual std::unique_ptr<Item> clone() const = 0;
+    virtual void translate(const QPointF &delta) = 0;
 
-    // Serialization: subclass writes its own fields; base writes id/type.
-    virtual QJsonObject toJson() const = 0;
-    static std::unique_ptr<Item> fromJson(const QJsonObject& o); // impl in Item.cpp
+    // Native (.iboard) JSON serialization.
+    virtual void write(QJsonObject &obj) const = 0;
+    virtual void read(const QJsonObject &obj) = 0;
 
-    const QUuid& id() const { return m_id; }
-    void setId(const QUuid& id) { m_id = id; }
-
-protected:
-    void writeBase(QJsonObject& o) const;   // writes "id","type"
-    void readBase(const QJsonObject& o);     // reads  "id"
-
-    QUuid m_id = QUuid::createUuid();
+    bool selected = false;
 };
 
 using ItemPtr = std::unique_ptr<Item>;
 
+// Construct an empty item of the requested type (used by the serializer).
+ItemPtr makeItem(ItemType type);
+
 } // namespace ib
 EOF
 
-# ---- 10. Core model: StrokeItem -------------------------------------------
+# ---------------------------------------------------------------------------
+#  src/model/StrokeItem.h  — freehand ink (pen / highlighter)
+# ---------------------------------------------------------------------------
 cat > src/model/StrokeItem.h <<'EOF'
 #pragma once
+
 #include <QColor>
-#include <QPainterPath>
-#include <vector>
+#include <QVector>
+
 #include "model/Item.h"
-#include "model/StrokePoint.h"
 
 namespace ib {
 
-// A vector ink stroke (pen or highlighter). Stored as raw samples plus a
-// lazily rebuilt QPainterPath; because we keep the vector samples forever,
-// the stroke re-renders crisp at ANY zoom (no rasterization baked in).
-class StrokeItem final : public Item {
+class StrokeItem : public Item {
 public:
+    QVector<StrokePoint> points;
+    QColor  color        = QColor(24, 24, 24);
+    double  baseWidth    = 3.0;
+    double  opacity      = 1.0;
+    bool    highlighter  = false;
+    bool    pressureWidth = true;
+
     ItemType type() const override { return ItemType::Stroke; }
-    QRectF   boundingRect() const override;
-    bool     hitTest(const QPointF& p, double tolerance) const override;
+    QRectF boundingRect() const override;
+    void paint(QPainter &p) const override;
     std::unique_ptr<Item> clone() const override;
-    QJsonObject toJson() const override;
-    static std::unique_ptr<StrokeItem> fromJsonImpl(const QJsonObject& o);
+    void translate(const QPointF &delta) override;
+    void write(QJsonObject &obj) const override;
+    void read(const QJsonObject &obj) override;
 
-    void addPoint(const StrokePoint& p);   // marks caches dirty
-    void finalize();                       // apply smoothing, build path
-
-    const std::vector<StrokePoint>& points() const { return m_points; }
-    std::vector<StrokePoint>&       points()       { return m_points; }
-
-    // Rebuilds (if dirty) and returns the centerline path in page coords.
-    const QPainterPath& path() const;
-
-    // --- styling ---
-    InkKind kind = InkKind::Pen;
-    QColor  color = QColor(20, 20, 20);
-    double  baseWidth = 2.5;          // px at zoom 1.0
-    double  opacity   = 1.0;          // 0..1
-    bool    pressureToWidth   = true;
-    bool    pressureToOpacity = false;
-    double  smoothing = 0.5;          // 0..1 stabilizer strength
-
-private:
-    void rebuild() const;             // recompute path + bounds
-
-    std::vector<StrokePoint>   m_points;
-    mutable QPainterPath       m_path;
-    mutable QRectF             m_bounds;
-    mutable bool               m_dirty = true;
+    void addPoint(const StrokePoint &pt) { points.push_back(pt); }
+    bool isEmpty() const { return points.isEmpty(); }
 };
 
 } // namespace ib
 EOF
 
-# ---- 11. Core model: ShapeItem / TextItem / ImageItem ----------------------
+# ---------------------------------------------------------------------------
+#  src/model/ShapeItem.h  — line / rectangle / ellipse
+# ---------------------------------------------------------------------------
 cat > src/model/ShapeItem.h <<'EOF'
 #pragma once
+
 #include <QColor>
 #include <QPointF>
+
 #include "model/Item.h"
 
 namespace ib {
 
-// Straight geometric primitives with optional snapping applied at creation.
-class ShapeItem final : public Item {
+class ShapeItem : public Item {
 public:
-    ItemType type() const override { return ItemType::Shape; }
-    QRectF   boundingRect() const override;
-    bool     hitTest(const QPointF& p, double tolerance) const override;
-    std::unique_ptr<Item> clone() const override;
-    QJsonObject toJson() const override;
-    static std::unique_ptr<ShapeItem> fromJsonImpl(const QJsonObject& o);
+    ShapeKind kind   = ShapeKind::Rectangle;
+    QPointF   p1;
+    QPointF   p2;
+    QColor    color  = QColor(24, 24, 24);
+    double    width  = 3.0;
+    bool      filled = false;
+    QColor    fill   = QColor(0, 0, 0, 0);
 
-    ShapeKind shape = ShapeKind::Line;
-    QPointF p1, p2;                 // page coords (bbox corners or endpoints)
-    QColor  strokeColor = QColor(20, 20, 20);
-    double  strokeWidth = 2.5;
-    bool    filled = false;
-    QColor  fillColor = QColor(0, 0, 0, 0);
-    double  opacity = 1.0;
+    ItemType type() const override { return ItemType::Shape; }
+    QRectF boundingRect() const override;
+    void paint(QPainter &p) const override;
+    std::unique_ptr<Item> clone() const override;
+    void translate(const QPointF &delta) override;
+    void write(QJsonObject &obj) const override;
+    void read(const QJsonObject &obj) override;
 };
 
 } // namespace ib
 EOF
 
+# ---------------------------------------------------------------------------
+#  src/model/TextItem.h  — a positioned text label
+# ---------------------------------------------------------------------------
 cat > src/model/TextItem.h <<'EOF'
 #pragma once
+
 #include <QColor>
 #include <QFont>
 #include <QPointF>
 #include <QString>
+
 #include "model/Item.h"
 
 namespace ib {
 
-// Editable text block. Kept intentionally minimal: font/size/color only.
-class TextItem final : public Item {
+class TextItem : public Item {
 public:
-    ItemType type() const override { return ItemType::Text; }
-    QRectF   boundingRect() const override;
-    bool     hitTest(const QPointF& p, double tolerance) const override;
-    std::unique_ptr<Item> clone() const override;
-    QJsonObject toJson() const override;
-    static std::unique_ptr<TextItem> fromJsonImpl(const QJsonObject& o);
-
+    QPointF pos;
     QString text;
-    QPointF pos;                    // top-left in page coords
-    double  wrapWidth = 0.0;        // 0 = no wrap
-    QFont   font = QFont("Sans", 18);
-    QColor  color = QColor(20, 20, 20);
+    QColor  color = QColor(24, 24, 24);
+    QFont   font  = QFont(QStringLiteral("Sans Serif"), 18);
+
+    ItemType type() const override { return ItemType::Text; }
+    QRectF boundingRect() const override;
+    void paint(QPainter &p) const override;
+    std::unique_ptr<Item> clone() const override;
+    void translate(const QPointF &delta) override;
+    void write(QJsonObject &obj) const override;
+    void read(const QJsonObject &obj) override;
 };
 
 } // namespace ib
 EOF
 
+# ---------------------------------------------------------------------------
+#  src/model/ImageItem.h  — an embedded raster image
+# ---------------------------------------------------------------------------
 cat > src/model/ImageItem.h <<'EOF'
 #pragma once
+
 #include <QImage>
 #include <QRectF>
+
 #include "model/Item.h"
 
 namespace ib {
 
-// An inserted raster image. Stored inline (PNG-encoded) inside the .board
-// file so boards are self-contained and round-trip losslessly.
-class ImageItem final : public Item {
+class ImageItem : public Item {
 public:
-    ItemType type() const override { return ItemType::Image; }
-    QRectF   boundingRect() const override { return rect; }
-    bool     hitTest(const QPointF& p, double tolerance) const override;
-    std::unique_ptr<Item> clone() const override;
-    QJsonObject toJson() const override;
-    static std::unique_ptr<ImageItem> fromJsonImpl(const QJsonObject& o);
+    QImage image;
+    QRectF rect;
 
-    QImage  image;                  // decoded pixels (kept for fast blit)
-    QRectF  rect;                   // placement rect in page coords
-    double  opacity = 1.0;
+    ItemType type() const override { return ItemType::Image; }
+    QRectF boundingRect() const override;
+    void paint(QPainter &p) const override;
+    std::unique_ptr<Item> clone() const override;
+    void translate(const QPointF &delta) override;
+    void write(QJsonObject &obj) const override;
+    void read(const QJsonObject &obj) override;
 };
 
 } // namespace ib
 EOF
 
-# ---- 12. Core model: Layer / Page / Document ------------------------------
+# ---------------------------------------------------------------------------
+#  src/model/Layer.h  — an ordered, copyable stack of items
+# ---------------------------------------------------------------------------
 cat > src/model/Layer.h <<'EOF'
 #pragma once
+
 #include <QString>
-#include <QUuid>
 #include <vector>
+
 #include "model/Item.h"
 
 namespace ib {
 
-// An ordered stack of items. Bottom of vector draws first.
-class Layer {
-public:
-    QUuid   id = QUuid::createUuid();
-    QString name = QStringLiteral("Layer");
+// A layer owns its items. It is deep-copyable so pages/documents can be cloned.
+struct Layer {
+    QString name    = QStringLiteral("Layer 1");
     bool    visible = true;
     bool    locked  = false;
     double  opacity = 1.0;
     std::vector<ItemPtr> items;
 
-    Layer clone() const;            // deep copy (clones each item)
-    QJsonObject toJson() const;
-    static Layer fromJson(const QJsonObject& o);
+    Layer() = default;
+    Layer(Layer &&) noexcept = default;
+    Layer &operator=(Layer &&) noexcept = default;
+
+    Layer(const Layer &other) { copyFrom(other); }
+    Layer &operator=(const Layer &other) {
+        if (this != &other) copyFrom(other);
+        return *this;
+    }
+
+    void copyFrom(const Layer &other) {
+        name    = other.name;
+        visible = other.visible;
+        locked  = other.locked;
+        opacity = other.opacity;
+        items.clear();
+        items.reserve(other.items.size());
+        for (const auto &it : other.items)
+            items.push_back(it->clone());
+    }
 };
 
 } // namespace ib
 EOF
 
+# ---------------------------------------------------------------------------
+#  src/model/Page.h  — background settings + layers
+# ---------------------------------------------------------------------------
 cat > src/model/Page.h <<'EOF'
 #pragma once
+
 #include <QColor>
-#include <QSizeF>
+#include <QRectF>
 #include <vector>
-#include "model/Enums.h"
+
 #include "model/Layer.h"
+#include "model/Types.h"
 
 namespace ib {
 
-// A single page/board. Infinite-canvas: item coordinates are unbounded; the
-// (optional) "paper size" only drives background pattern + PDF page export.
-class Page {
-public:
-    QUuid   id = QUuid::createUuid();
-    QString title = QStringLiteral("Page 1");
-
-    // Background
-    BackgroundKind background = BackgroundKind::Grid;
-    QColor  bgColor   = QColor(255, 255, 255);
-    QColor  gridColor = QColor(0, 0, 0, 28);
-    double  gridSpacing = 32.0;     // page units
-    QSizeF  paperSize = QSizeF(1920, 1080); // for export framing only
-
+struct Page {
+    BackgroundKind background   = BackgroundKind::Grid;
+    QColor         bgColor      = QColor(255, 255, 255);
+    QColor         gridColor    = QColor(223, 223, 223);
+    double         gridSpacing  = 40.0;
     std::vector<Layer> layers;
-    int activeLayer = 0;
+    int            activeLayer  = 0;
 
-    Page();                         // creates one default layer
-    Layer&       active();
-    const Layer& active() const;
+    Page() { layers.emplace_back(); }
 
-    QRectF contentBounds() const;   // union of all item bounds (for fit-to-content)
+    Layer &active() {
+        if (layers.empty()) layers.emplace_back();
+        if (activeLayer < 0 || activeLayer >= static_cast<int>(layers.size()))
+            activeLayer = 0;
+        return layers[static_cast<std::size_t>(activeLayer)];
+    }
 
-    Page clone() const;
-    QJsonObject toJson() const;
-    static Page fromJson(const QJsonObject& o);
+    // Union of every visible item's bounding rect (empty if the page is blank).
+    QRectF contentBounds() const {
+        QRectF r;
+        for (const auto &layer : layers) {
+            if (!layer.visible) continue;
+            for (const auto &it : layer.items)
+                r = r.isNull() ? it->boundingRect() : r.united(it->boundingRect());
+        }
+        return r;
+    }
 };
 
 } // namespace ib
 EOF
 
+# ---------------------------------------------------------------------------
+#  src/model/Document.h  — the full multi-page document (owns the undo stack)
+# ---------------------------------------------------------------------------
 cat > src/model/Document.h <<'EOF'
 #pragma once
+
 #include <QObject>
 #include <QString>
 #include <vector>
-#include <memory>
+
 #include "model/Page.h"
+
+class QUndoStack;
 
 namespace ib {
 
-class History; // undo/redo, defined in History.h
-
-// The whole notebook: an ordered list of pages plus file identity. Emits
-// Qt signals so the UI/canvas can react without polling.
 class Document : public QObject {
     Q_OBJECT
 public:
-    explicit Document(QObject* parent = nullptr);
+    explicit Document(QObject *parent = nullptr);
     ~Document() override;
 
-    // Pages
-    int   pageCount() const { return static_cast<int>(m_pages.size()); }
-    Page&       page(int i);
-    const Page& page(int i) const;
-    int   currentIndex() const { return m_current; }
-    void  setCurrentIndex(int i);
-    Page& current();
-    int   addPage();                 // returns new index
-    void  removePage(int i);
-    void  movePage(int from, int to);
+    int  pageCount() const { return static_cast<int>(m_pages.size()); }
+    Page &page(int i)             { return m_pages[static_cast<std::size_t>(i)]; }
+    const Page &page(int i) const { return m_pages[static_cast<std::size_t>(i)]; }
+    Page &current()               { return m_pages[static_cast<std::size_t>(m_current)]; }
 
-    // Identity / dirty tracking
+    int  currentIndex() const { return m_current; }
+    void setCurrentIndex(int i);
+
+    void addPage();
+    void removePage(int i);
+
+    // Replace all pages (used when loading a file). Takes ownership by move.
+    void setPages(std::vector<Page> &&pages);
+
+    QUndoStack *undoStack() const { return m_undo; }
+
     QString filePath() const { return m_filePath; }
-    void    setFilePath(const QString& p) { m_filePath = p; }
-    bool    isModified() const { return m_modified; }
-    void    setModified(bool m);
+    void setFilePath(const QString &p) { m_filePath = p; }
 
-    History& history() { return *m_history; }
+    bool modified() const { return m_modified; }
+    void setModified(bool m);
+    void markChanged() { setModified(true); emit contentChanged(); }
 
 signals:
-    void modifiedChanged(bool modified);
     void currentPageChanged(int index);
     void pagesChanged();
-    void contentChanged();           // any item add/remove/edit
-
-public:
-    void markContentChanged();       // called by tools/history
+    void modifiedChanged(bool modified);
+    void contentChanged();
 
 private:
     std::vector<Page> m_pages;
-    int     m_current = 0;
-    QString m_filePath;
-    bool    m_modified = false;
-    std::unique_ptr<History> m_history;
+    int         m_current = 0;
+    QUndoStack *m_undo    = nullptr;
+    QString     m_filePath;
+    bool        m_modified = false;
 };
 
 } // namespace ib
 EOF
 
-# ---- 13. Undo/redo interface ----------------------------------------------
-cat > src/model/History.h <<'EOF'
-#pragma once
-#include <functional>
-#include <memory>
-#include <string>
-#include <vector>
+log "PART 1 complete: scaffold, CMake, entry point, and core model headers written."
+# ---------------------------------------------------------------------------
+#  END OF PART 1  —  append PART 2 (model .cpp implementations) below
+# ---------------------------------------------------------------------------
 
-namespace ib {
 
-// A single reversible edit. do()/undo() are captured closures so tools can
-// express edits inline without a class explosion (lean by design).
-struct Command {
-    std::string label;
-    std::function<void()> redo;
-    std::function<void()> undo;
-};
+# ---------------------------------------------------------------------------
+#  PART 2 of 6 : model .cpp implementations
+#  Append below PART 1. Creates the source files declared by the Part 1 headers.
+# ---------------------------------------------------------------------------
+log "PART 2: writing model implementations (items + document)"
 
-// Bounded linear undo stack (full undo/redo, no branching — intentional).
-class History {
-public:
-    explicit History(int limit = 500) : m_limit(limit) {}
-
-    void push(Command cmd);      // executes redo() then records
-    bool canUndo() const { return m_index > 0; }
-    bool canRedo() const { return m_index < static_cast<int>(m_stack.size()); }
-    void undo();
-    void redo();
-    void clear();
-
-private:
-    std::vector<Command> m_stack;
-    int m_index = 0;             // number of applied commands
-    int m_limit;
-};
-
-} // namespace ib
-EOF
-
-log "PART 1 complete: scaffold, CMake, entry point, and core vector model headers written."
-# =============================================================================
-#  END OF PART 1  —  append PART 2 (model .cpp + smoothing + serialization) below
-# =============================================================================
-
-# =============================================================================
-#  PART 2  —  model implementations, ink smoothing/tessellation, serialization
-#  Append below PART 1. Self-contained: creates new files only.
-# =============================================================================
-log "PART 2: writing model impls, ink math, and serialization"
-
-# ---- util/Log.cpp ----------------------------------------------------------
-cat > src/util/Log.cpp <<'EOF'
-#include "util/Log.h"
-#include <QDebug>
-#include <cstdarg>
-#include <cstdio>
-
-namespace ib::log {
-static void vlog(const char* level, const char* fmt, va_list ap) {
-    char buf[2048];
-    std::vsnprintf(buf, sizeof(buf), fmt, ap);
-    qInfo().noquote() << level << buf;
-}
-void init() { /* reserved: could install qInstallMessageHandler + file sink */ }
-void info (const char* fmt, ...) { va_list ap; va_start(ap, fmt); vlog("[info] ", fmt, ap); va_end(ap); }
-void warn (const char* fmt, ...) { va_list ap; va_start(ap, fmt); vlog("[warn] ", fmt, ap); va_end(ap); }
-void error(const char* fmt, ...) { va_list ap; va_start(ap, fmt); vlog("[err ] ", fmt, ap); va_end(ap); }
-} // namespace ib::log
-EOF
-
-# ---- util/Settings.cpp -----------------------------------------------------
-cat > src/util/Settings.cpp <<'EOF'
-#include "util/Settings.h"
-namespace ib {
-QSettings& Settings::raw() {
-    // Format/scope come from QApplication org+app name set in main().
-    static QSettings s(QSettings::IniFormat, QSettings::UserScope,
-                       "InkBoard", "InkBoard");
-    return s;
-}
-} // namespace ib
-EOF
-
-# ---- ink/Smoothing.h -------------------------------------------------------
-cat > src/ink/Smoothing.h <<'EOF'
-#pragma once
-#include <QPainterPath>
-#include <QPointF>
-#include <vector>
-#include "model/StrokePoint.h"
-
-namespace ib::ink {
-
-// Exponential position stabilizer. strength in [0,1]; 0 = passthrough.
-// Returns a new sample vector; pressure/tilt/time are carried through.
-std::vector<StrokePoint> stabilize(const std::vector<StrokePoint>& in, double strength);
-
-// Uniform Catmull-Rom spline through the given positions -> smooth centerline.
-// Falls back to poly-line/quadratic for <4 points.
-QPainterPath catmullRomPath(const std::vector<QPointF>& pts);
-
-// Convenience: centerline path directly from samples.
-QPainterPath centerline(const std::vector<StrokePoint>& pts);
-
-} // namespace ib::ink
-EOF
-
-# ---- ink/Smoothing.cpp -----------------------------------------------------
-cat > src/ink/Smoothing.cpp <<'EOF'
-#include "ink/Smoothing.h"
-
-namespace ib::ink {
-
-std::vector<StrokePoint> stabilize(const std::vector<StrokePoint>& in, double strength) {
-    if (in.size() < 3 || strength <= 0.0) return in;
-    const double a = 1.0 - qBound(0.0, strength, 0.95); // smaller a = smoother
-    std::vector<StrokePoint> out;
-    out.reserve(in.size());
-    out.push_back(in.front());
-    QPointF acc = in.front().pos;
-    for (size_t i = 1; i < in.size(); ++i) {
-        acc = acc * (1.0 - a) + in[i].pos * a;
-        StrokePoint p = in[i];
-        p.pos = acc;
-        out.push_back(p);
-    }
-    out.back().pos = in.back().pos; // anchor the true endpoint
-    return out;
-}
-
-QPainterPath catmullRomPath(const std::vector<QPointF>& p) {
-    QPainterPath path;
-    const int n = static_cast<int>(p.size());
-    if (n == 0) return path;
-    path.moveTo(p[0]);
-    if (n == 1) { path.lineTo(p[0]); return path; }
-    if (n == 2) { path.lineTo(p[1]); return path; }
-
-    // Convert each Catmull-Rom segment to a cubic Bezier (tension = 0.5).
-    for (int i = 0; i < n - 1; ++i) {
-        const QPointF p0 = p[i > 0 ? i - 1 : 0];
-        const QPointF p1 = p[i];
-        const QPointF p2 = p[i + 1];
-        const QPointF p3 = p[i + 2 < n ? i + 2 : n - 1];
-        const QPointF c1 = p1 + (p2 - p0) / 6.0;
-        const QPointF c2 = p2 - (p3 - p1) / 6.0;
-        path.cubicTo(c1, c2, p2);
-    }
-    return path;
-}
-
-QPainterPath centerline(const std::vector<StrokePoint>& pts) {
-    std::vector<QPointF> xy;
-    xy.reserve(pts.size());
-    for (const auto& s : pts) xy.push_back(s.pos);
-    return catmullRomPath(xy);
-}
-
-} // namespace ib::ink
-EOF
-
-# ---- ink/Tessellator.h -----------------------------------------------------
-cat > src/ink/Tessellator.h <<'EOF'
-#pragma once
-#include <QPainterPath>
-#include <vector>
-#include "model/StrokePoint.h"
-
-namespace ib::ink {
-
-// Effective per-point width from base width + optional pressure mapping.
-double widthAt(double baseWidth, float pressure, bool pressureToWidth);
-
-// Builds a CLOSED, fillable outline (a variable-width "ribbon" with round
-// caps) from the samples. Filling this with the ink color yields crisp,
-// pressure-tapered strokes that stay sharp at any zoom because they are
-// pure vector geometry rebuilt on demand.
-QPainterPath buildRibbon(const std::vector<StrokePoint>& pts,
-                         double baseWidth, bool pressureToWidth);
-
-} // namespace ib::ink
-EOF
-
-# ---- ink/Tessellator.cpp ---------------------------------------------------
-cat > src/ink/Tessellator.cpp <<'EOF'
-#include "ink/Tessellator.h"
-#include "ink/Smoothing.h"
-#include <QLineF>
-#include <cmath>
-
-namespace ib::ink {
-
-double widthAt(double baseWidth, float pressure, bool pressureToWidth) {
-    if (!pressureToWidth) return baseWidth;
-    const double p = qBound(0.0, static_cast<double>(pressure), 1.0);
-    return baseWidth * (0.30 + 0.70 * p); // never fully collapse to 0
-}
-
-static QPointF normal(const QPointF& a, const QPointF& b) {
-    QPointF d = b - a;
-    const double len = std::hypot(d.x(), d.y());
-    if (len < 1e-6) return QPointF(0, 0);
-    return QPointF(-d.y() / len, d.x() / len); // left normal
-}
-
-QPainterPath buildRibbon(const std::vector<StrokePoint>& in,
-                         double baseWidth, bool pressureToWidth) {
-    QPainterPath path;
-    if (in.empty()) return path;
-
-    // A single tap -> a dot.
-    if (in.size() == 1) {
-        const double r = 0.5 * widthAt(baseWidth, in[0].pressure, pressureToWidth);
-        path.addEllipse(in[0].pos, r, r);
-        return path;
-    }
-
-    // Densify centerline so the ribbon follows the smoothed curve.
-    const QPainterPath spine = centerline(in);
-    const int steps = qMax<int>(static_cast<int>(spine.length() / 2.0), static_cast<int>(in.size()));
-    std::vector<QPointF> pos;
-    std::vector<double>  half;
-    pos.reserve(steps + 1);
-    half.reserve(steps + 1);
-    for (int i = 0; i <= steps; ++i) {
-        const double t = static_cast<double>(i) / steps;
-        const double pct = spine.percentAtLength(spine.length() * t);
-        pos.push_back(spine.pointAtPercent(pct));
-        // sample pressure by nearest original index (cheap, adequate)
-        const size_t idx = qMin(in.size() - 1,
-                                static_cast<size_t>(t * (in.size() - 1) + 0.5));
-        half.push_back(0.5 * widthAt(baseWidth, in[idx].pressure, pressureToWidth));
-    }
-
-    // Left edge forward, right edge backward => closed polygon.
-    std::vector<QPointF> left, right;
-    left.reserve(pos.size());
-    right.reserve(pos.size());
-    for (size_t i = 0; i < pos.size(); ++i) {
-        const QPointF a = pos[i > 0 ? i - 1 : 0];
-        const QPointF b = pos[i + 1 < pos.size() ? i + 1 : i];
-        const QPointF n = normal(a, b);
-        left.push_back(pos[i] + n * half[i]);
-        right.push_back(pos[i] - n * half[i]);
-    }
-
-    path.moveTo(left.front());
-    for (size_t i = 1; i < left.size(); ++i) path.lineTo(left[i]);
-    // round cap at end
-    path.arcTo(QRectF(pos.back().x() - half.back(), pos.back().y() - half.back(),
-                      2 * half.back(), 2 * half.back()), 0, -180);
-    for (size_t i = right.size(); i-- > 0;) path.lineTo(right[i]);
-    // round cap at start
-    path.arcTo(QRectF(pos.front().x() - half.front(), pos.front().y() - half.front(),
-                      2 * half.front(), 2 * half.front()), 0, -180);
-    path.closeSubpath();
-    return path;
-}
-
-} // namespace ib::ink
-EOF
-
-# ---- model/Item.cpp (dispatch + base helpers) ------------------------------
+# ---------------------------------------------------------------------------
+#  src/model/Item.cpp  — factory used by the serializer
+# ---------------------------------------------------------------------------
 cat > src/model/Item.cpp <<'EOF'
 #include "model/Item.h"
+
 #include "model/StrokeItem.h"
 #include "model/ShapeItem.h"
 #include "model/TextItem.h"
@@ -896,3850 +548,3089 @@ cat > src/model/Item.cpp <<'EOF'
 
 namespace ib {
 
-void Item::writeBase(QJsonObject& o) const {
-    o["id"] = m_id.toString(QUuid::WithoutBraces);
-}
-void Item::readBase(const QJsonObject& o) {
-    const QUuid u(o.value("id").toString());
-    if (!u.isNull()) m_id = u;
-}
-
-std::unique_ptr<Item> Item::fromJson(const QJsonObject& o) {
-    const QString t = o.value("type").toString();
-    if (t == "stroke") return StrokeItem::fromJsonImpl(o);
-    if (t == "shape")  return ShapeItem::fromJsonImpl(o);
-    if (t == "text")   return TextItem::fromJsonImpl(o);
-    if (t == "image")  return ImageItem::fromJsonImpl(o);
+ItemPtr makeItem(ItemType type)
+{
+    switch (type) {
+    case ItemType::Stroke: return std::make_unique<StrokeItem>();
+    case ItemType::Shape:  return std::make_unique<ShapeItem>();
+    case ItemType::Text:   return std::make_unique<TextItem>();
+    case ItemType::Image:  return std::make_unique<ImageItem>();
+    }
     return nullptr;
 }
 
 } // namespace ib
 EOF
 
-# ---- model/StrokeItem.cpp --------------------------------------------------
+# ---------------------------------------------------------------------------
+#  src/model/StrokeItem.cpp
+# ---------------------------------------------------------------------------
 cat > src/model/StrokeItem.cpp <<'EOF'
 #include "model/StrokeItem.h"
-#include "ink/Smoothing.h"
-#include "ink/Tessellator.h"
+
+#include <QPainter>
+#include <QPainterPath>
 #include <QJsonArray>
-#include <QPainterPathStroker>
+#include <algorithm>
 
 namespace ib {
 
-void StrokeItem::addPoint(const StrokePoint& p) { m_points.push_back(p); m_dirty = true; }
-void StrokeItem::finalize() {
-    if (smoothing > 0.0) m_points = ink::stabilize(m_points, smoothing);
-    m_dirty = true; rebuild();
+static QJsonArray colorToJson(const QColor &c)
+{
+    QJsonArray a;
+    a.append(c.red());
+    a.append(c.green());
+    a.append(c.blue());
+    a.append(c.alpha());
+    return a;
 }
 
-void StrokeItem::rebuild() const {
-    m_path = ink::centerline(m_points);
-    QRectF b = m_path.boundingRect();
-    const double pad = baseWidth; // half-width each side, generous
-    m_bounds = b.adjusted(-pad, -pad, pad, pad);
-    m_dirty = false;
+static QColor colorFromJson(const QJsonValue &v, const QColor &def)
+{
+    const QJsonArray a = v.toArray();
+    if (a.size() < 3)
+        return def;
+    const int alpha = a.size() >= 4 ? a.at(3).toInt(255) : 255;
+    return QColor(a.at(0).toInt(), a.at(1).toInt(), a.at(2).toInt(), alpha);
 }
 
-const QPainterPath& StrokeItem::path() const {
-    if (m_dirty) rebuild();
-    return m_path;
-}
+QRectF StrokeItem::boundingRect() const
+{
+    if (points.isEmpty())
+        return QRectF();
 
-QRectF StrokeItem::boundingRect() const {
-    if (m_dirty) rebuild();
-    return m_bounds;
-}
-
-bool StrokeItem::hitTest(const QPointF& p, double tolerance) const {
-    if (!boundingRect().adjusted(-tolerance, -tolerance, tolerance, tolerance).contains(p))
-        return false;
-    QPainterPathStroker stroker;
-    stroker.setWidth(baseWidth + 2.0 * tolerance);
-    stroker.setCapStyle(Qt::RoundCap);
-    stroker.setJoinStyle(Qt::RoundJoin);
-    return stroker.createStroke(path()).contains(p);
-}
-
-std::unique_ptr<Item> StrokeItem::clone() const {
-    auto c = std::make_unique<StrokeItem>(*this);
-    c->m_dirty = true;
-    return c;
-}
-
-QJsonObject StrokeItem::toJson() const {
-    QJsonObject o;
-    writeBase(o);
-    o["type"] = "stroke";
-    o["kind"] = int(kind);
-    o["color"] = color.name(QColor::HexArgb);
-    o["baseWidth"] = baseWidth;
-    o["opacity"] = opacity;
-    o["pW"] = pressureToWidth;
-    o["pO"] = pressureToOpacity;
-    o["smoothing"] = smoothing;
-    QJsonArray arr;
-    for (const auto& s : m_points) {
-        arr.append(s.pos.x()); arr.append(s.pos.y());
-        arr.append(double(s.pressure));
-        arr.append(double(s.tiltX)); arr.append(double(s.tiltY));
-        arr.append(double(s.tMs));
+    double minX = points.first().x, maxX = minX;
+    double minY = points.first().y, maxY = minY;
+    for (const auto &pt : points) {
+        minX = std::min(minX, pt.x);
+        maxX = std::max(maxX, pt.x);
+        minY = std::min(minY, pt.y);
+        maxY = std::max(maxY, pt.y);
     }
-    o["pts"] = arr;
-    return o;
+    const double m = baseWidth * 0.5 + 1.0;
+    return QRectF(QPointF(minX, minY), QPointF(maxX, maxY)).adjusted(-m, -m, m, m);
 }
 
-std::unique_ptr<StrokeItem> StrokeItem::fromJsonImpl(const QJsonObject& o) {
-    auto s = std::make_unique<StrokeItem>();
-    s->readBase(o);
-    s->kind = InkKind(o.value("kind").toInt());
-    s->color = QColor(o.value("color").toString());
-    s->baseWidth = o.value("baseWidth").toDouble(2.5);
-    s->opacity = o.value("opacity").toDouble(1.0);
-    s->pressureToWidth = o.value("pW").toBool(true);
-    s->pressureToOpacity = o.value("pO").toBool(false);
-    s->smoothing = o.value("smoothing").toDouble(0.5);
-    const QJsonArray arr = o.value("pts").toArray();
-    for (int i = 0; i + 5 < arr.size(); i += 6) {
-        StrokePoint sp;
-        sp.pos = QPointF(arr[i].toDouble(), arr[i + 1].toDouble());
-        sp.pressure = float(arr[i + 2].toDouble());
-        sp.tiltX = float(arr[i + 3].toDouble());
-        sp.tiltY = float(arr[i + 4].toDouble());
-        sp.tMs = qint64(arr[i + 5].toDouble());
-        s->m_points.push_back(sp);
+void StrokeItem::paint(QPainter &p) const
+{
+    if (points.isEmpty())
+        return;
+
+    p.save();
+
+    QColor c = color;
+    c.setAlphaF(c.alphaF() * qBound(0.0, opacity, 1.0));
+
+    if (points.size() == 1) {
+        const double pr = pressureWidth ? qMax(0.15, points.first().pressure) : 1.0;
+        const double w  = qMax(0.3, baseWidth * pr);
+        p.setPen(Qt::NoPen);
+        p.setBrush(c);
+        p.drawEllipse(points.first().pos(), w * 0.5, w * 0.5);
+        p.restore();
+        return;
     }
-    s->m_dirty = true;
-    return s;
+
+    QPen pen(c);
+    pen.setCapStyle(Qt::RoundCap);
+    pen.setJoinStyle(Qt::RoundJoin);
+
+    if (pressureWidth) {
+        for (int i = 1; i < points.size(); ++i) {
+            const double pr = 0.5 * (points[i - 1].pressure + points[i].pressure);
+            pen.setWidthF(qMax(0.3, baseWidth * pr));
+            p.setPen(pen);
+            p.drawLine(points[i - 1].pos(), points[i].pos());
+        }
+    } else {
+        pen.setWidthF(baseWidth);
+        p.setPen(pen);
+        QPainterPath path(points.first().pos());
+        for (int i = 1; i < points.size(); ++i)
+            path.lineTo(points[i].pos());
+        p.drawPath(path);
+    }
+
+    p.restore();
+}
+
+std::unique_ptr<Item> StrokeItem::clone() const
+{
+    return std::make_unique<StrokeItem>(*this);
+}
+
+void StrokeItem::translate(const QPointF &delta)
+{
+    for (auto &pt : points) {
+        pt.x += delta.x();
+        pt.y += delta.y();
+    }
+}
+
+void StrokeItem::write(QJsonObject &obj) const
+{
+    obj["type"]          = "stroke";
+    obj["color"]         = colorToJson(color);
+    obj["baseWidth"]     = baseWidth;
+    obj["opacity"]       = opacity;
+    obj["highlighter"]   = highlighter;
+    obj["pressureWidth"] = pressureWidth;
+
+    QJsonArray pts;
+    for (const auto &pt : points) {
+        QJsonArray a;
+        a.append(pt.x);
+        a.append(pt.y);
+        a.append(pt.pressure);
+        pts.append(a);
+    }
+    obj["points"] = pts;
+}
+
+void StrokeItem::read(const QJsonObject &obj)
+{
+    color         = colorFromJson(obj.value("color"), QColor(24, 24, 24));
+    baseWidth     = obj.value("baseWidth").toDouble(3.0);
+    opacity       = obj.value("opacity").toDouble(1.0);
+    highlighter   = obj.value("highlighter").toBool(false);
+    pressureWidth = obj.value("pressureWidth").toBool(true);
+
+    points.clear();
+    const QJsonArray pts = obj.value("points").toArray();
+    for (const auto &v : pts) {
+        const QJsonArray a = v.toArray();
+        if (a.size() >= 2) {
+            const double pr = a.size() >= 3 ? a.at(2).toDouble(1.0) : 1.0;
+            points.push_back(StrokePoint(a.at(0).toDouble(), a.at(1).toDouble(), pr));
+        }
+    }
 }
 
 } // namespace ib
 EOF
 
-# ---- model/ShapeItem.cpp ---------------------------------------------------
+# ---------------------------------------------------------------------------
+#  src/model/ShapeItem.cpp
+# ---------------------------------------------------------------------------
 cat > src/model/ShapeItem.cpp <<'EOF'
 #include "model/ShapeItem.h"
-#include <QLineF>
-#include <cmath>
+
+#include <QPainter>
+#include <QJsonArray>
 
 namespace ib {
 
-QRectF ShapeItem::boundingRect() const {
+static QJsonArray colorToJson(const QColor &c)
+{
+    QJsonArray a;
+    a.append(c.red());
+    a.append(c.green());
+    a.append(c.blue());
+    a.append(c.alpha());
+    return a;
+}
+
+static QColor colorFromJson(const QJsonValue &v, const QColor &def)
+{
+    const QJsonArray a = v.toArray();
+    if (a.size() < 3)
+        return def;
+    const int alpha = a.size() >= 4 ? a.at(3).toInt(255) : 255;
+    return QColor(a.at(0).toInt(), a.at(1).toInt(), a.at(2).toInt(), alpha);
+}
+
+QRectF ShapeItem::boundingRect() const
+{
     QRectF r = QRectF(p1, p2).normalized();
-    const double pad = strokeWidth + 4.0;
-    return r.adjusted(-pad, -pad, pad, pad);
+    const double m = width * 0.5 + 1.0;
+    return r.adjusted(-m, -m, m, m);
 }
 
-bool ShapeItem::hitTest(const QPointF& p, double tol) const {
-    const double t = strokeWidth * 0.5 + tol;
-    switch (shape) {
-    case ShapeKind::Line:
-    case ShapeKind::Arrow: {
-        const QLineF ln(p1, p2);
-        // distance point->segment
-        const double L2 = ln.dx()*ln.dx() + ln.dy()*ln.dy();
-        if (L2 < 1e-9) return QLineF(p1, p).length() <= t;
-        double u = ((p.x()-p1.x())*ln.dx() + (p.y()-p1.y())*ln.dy()) / L2;
-        u = qBound(0.0, u, 1.0);
-        const QPointF proj(p1.x()+u*ln.dx(), p1.y()+u*ln.dy());
-        return QLineF(proj, p).length() <= t;
+void ShapeItem::paint(QPainter &p) const
+{
+    p.save();
+
+    QPen pen(color);
+    pen.setWidthF(width);
+    pen.setCapStyle(Qt::RoundCap);
+    pen.setJoinStyle(Qt::RoundJoin);
+    p.setPen(pen);
+
+    if (filled && kind != ShapeKind::Line)
+        p.setBrush(fill);
+    else
+        p.setBrush(Qt::NoBrush);
+
+    const QRectF r = QRectF(p1, p2).normalized();
+    switch (kind) {
+    case ShapeKind::Line:      p.drawLine(p1, p2); break;
+    case ShapeKind::Rectangle: p.drawRect(r);      break;
+    case ShapeKind::Ellipse:   p.drawEllipse(r);   break;
     }
-    case ShapeKind::Rectangle: {
-        QRectF r = QRectF(p1, p2).normalized();
-        if (filled && r.contains(p)) return true;
-        QRectF outer = r.adjusted(-t,-t,t,t), inner = r.adjusted(t,t,-t,-t);
-        return outer.contains(p) && !inner.contains(p);
-    }
-    case ShapeKind::Ellipse: {
-        QRectF r = QRectF(p1, p2).normalized();
-        const double rx = r.width()/2, ry = r.height()/2;
-        if (rx < 1e-6 || ry < 1e-6) return false;
-        const QPointF c = r.center();
-        const double v = std::pow((p.x()-c.x())/rx,2) + std::pow((p.y()-c.y())/ry,2);
-        if (filled && v <= 1.0) return true;
-        const double band = t / qMax(rx, ry);
-        return std::fabs(v - 1.0) <= 2.0 * band;
-    }
-    }
-    return false;
+
+    p.restore();
 }
 
-std::unique_ptr<Item> ShapeItem::clone() const { return std::make_unique<ShapeItem>(*this); }
-
-QJsonObject ShapeItem::toJson() const {
-    QJsonObject o; writeBase(o);
-    o["type"] = "shape";
-    o["shape"] = int(shape);
-    o["x1"] = p1.x(); o["y1"] = p1.y();
-    o["x2"] = p2.x(); o["y2"] = p2.y();
-    o["stroke"] = strokeColor.name(QColor::HexArgb);
-    o["sw"] = strokeWidth;
-    o["filled"] = filled;
-    o["fill"] = fillColor.name(QColor::HexArgb);
-    o["opacity"] = opacity;
-    return o;
+std::unique_ptr<Item> ShapeItem::clone() const
+{
+    return std::make_unique<ShapeItem>(*this);
 }
 
-std::unique_ptr<ShapeItem> ShapeItem::fromJsonImpl(const QJsonObject& o) {
-    auto s = std::make_unique<ShapeItem>();
-    s->readBase(o);
-    s->shape = ShapeKind(o.value("shape").toInt());
-    s->p1 = QPointF(o.value("x1").toDouble(), o.value("y1").toDouble());
-    s->p2 = QPointF(o.value("x2").toDouble(), o.value("y2").toDouble());
-    s->strokeColor = QColor(o.value("stroke").toString());
-    s->strokeWidth = o.value("sw").toDouble(2.5);
-    s->filled = o.value("filled").toBool(false);
-    s->fillColor = QColor(o.value("fill").toString());
-    s->opacity = o.value("opacity").toDouble(1.0);
-    return s;
+void ShapeItem::translate(const QPointF &delta)
+{
+    p1 += delta;
+    p2 += delta;
+}
+
+void ShapeItem::write(QJsonObject &obj) const
+{
+    obj["type"]   = "shape";
+    obj["kind"]   = static_cast<int>(kind);
+    obj["x1"]     = p1.x();
+    obj["y1"]     = p1.y();
+    obj["x2"]     = p2.x();
+    obj["y2"]     = p2.y();
+    obj["color"]  = colorToJson(color);
+    obj["width"]  = width;
+    obj["filled"] = filled;
+    obj["fill"]   = colorToJson(fill);
+}
+
+void ShapeItem::read(const QJsonObject &obj)
+{
+    kind   = static_cast<ShapeKind>(obj.value("kind").toInt(static_cast<int>(ShapeKind::Rectangle)));
+    p1     = QPointF(obj.value("x1").toDouble(), obj.value("y1").toDouble());
+    p2     = QPointF(obj.value("x2").toDouble(), obj.value("y2").toDouble());
+    color  = colorFromJson(obj.value("color"), QColor(24, 24, 24));
+    width  = obj.value("width").toDouble(3.0);
+    filled = obj.value("filled").toBool(false);
+    fill   = colorFromJson(obj.value("fill"), QColor(0, 0, 0, 0));
 }
 
 } // namespace ib
 EOF
 
-# ---- model/TextItem.cpp ----------------------------------------------------
+# ---------------------------------------------------------------------------
+#  src/model/TextItem.cpp
+# ---------------------------------------------------------------------------
 cat > src/model/TextItem.cpp <<'EOF'
 #include "model/TextItem.h"
+
+#include <QPainter>
 #include <QFontMetricsF>
+#include <QJsonArray>
+#include <QSizeF>
 
 namespace ib {
 
-QRectF TextItem::boundingRect() const {
+static QJsonArray colorToJson(const QColor &c)
+{
+    QJsonArray a;
+    a.append(c.red());
+    a.append(c.green());
+    a.append(c.blue());
+    a.append(c.alpha());
+    return a;
+}
+
+static QColor colorFromJson(const QJsonValue &v, const QColor &def)
+{
+    const QJsonArray a = v.toArray();
+    if (a.size() < 3)
+        return def;
+    const int alpha = a.size() >= 4 ? a.at(3).toInt(255) : 255;
+    return QColor(a.at(0).toInt(), a.at(1).toInt(), a.at(2).toInt(), alpha);
+}
+
+QRectF TextItem::boundingRect() const
+{
     QFontMetricsF fm(font);
-    QRectF r = fm.boundingRect(QRectF(pos, QSizeF(wrapWidth > 0 ? wrapWidth : 100000, 100000)),
-                               Qt::TextWordWrap, text.isEmpty() ? " " : text);
+    QRectF r = fm.boundingRect(QRectF(0, 0, 100000, 100000),
+                               Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap,
+                               text.isEmpty() ? QStringLiteral(" ") : text);
     r.moveTopLeft(pos);
     return r.adjusted(-2, -2, 2, 2);
 }
 
-bool TextItem::hitTest(const QPointF& p, double tol) const {
-    return boundingRect().adjusted(-tol,-tol,tol,tol).contains(p);
+void TextItem::paint(QPainter &p) const
+{
+    p.save();
+    p.setPen(color);
+    p.setFont(font);
+    p.drawText(QRectF(pos, QSizeF(100000, 100000)),
+               Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap | Qt::TextDontClip,
+               text);
+    p.restore();
 }
 
-std::unique_ptr<Item> TextItem::clone() const { return std::make_unique<TextItem>(*this); }
-
-QJsonObject TextItem::toJson() const {
-    QJsonObject o; writeBase(o);
-    o["type"] = "text";
-    o["text"] = text;
-    o["x"] = pos.x(); o["y"] = pos.y();
-    o["wrap"] = wrapWidth;
-    o["font"] = font.toString();
-    o["color"] = color.name(QColor::HexArgb);
-    return o;
+std::unique_ptr<Item> TextItem::clone() const
+{
+    return std::make_unique<TextItem>(*this);
 }
 
-std::unique_ptr<TextItem> TextItem::fromJsonImpl(const QJsonObject& o) {
-    auto t = std::make_unique<TextItem>();
-    t->readBase(o);
-    t->text = o.value("text").toString();
-    t->pos = QPointF(o.value("x").toDouble(), o.value("y").toDouble());
-    t->wrapWidth = o.value("wrap").toDouble(0.0);
-    QFont f; f.fromString(o.value("font").toString()); t->font = f;
-    t->color = QColor(o.value("color").toString());
-    return t;
+void TextItem::translate(const QPointF &delta)
+{
+    pos += delta;
+}
+
+void TextItem::write(QJsonObject &obj) const
+{
+    obj["type"]  = "text";
+    obj["x"]     = pos.x();
+    obj["y"]     = pos.y();
+    obj["text"]  = text;
+    obj["color"] = colorToJson(color);
+    obj["font"]  = font.toString();
+}
+
+void TextItem::read(const QJsonObject &obj)
+{
+    pos   = QPointF(obj.value("x").toDouble(), obj.value("y").toDouble());
+    text  = obj.value("text").toString();
+    color = colorFromJson(obj.value("color"), QColor(24, 24, 24));
+    QFont f;
+    if (f.fromString(obj.value("font").toString()))
+        font = f;
 }
 
 } // namespace ib
 EOF
 
-# ---- model/ImageItem.cpp ---------------------------------------------------
+# ---------------------------------------------------------------------------
+#  src/model/ImageItem.cpp
+# ---------------------------------------------------------------------------
 cat > src/model/ImageItem.cpp <<'EOF'
 #include "model/ImageItem.h"
+
+#include <QPainter>
 #include <QBuffer>
 #include <QByteArray>
 
 namespace ib {
 
-bool ImageItem::hitTest(const QPointF& p, double tol) const {
-    return rect.adjusted(-tol,-tol,tol,tol).contains(p);
+QRectF ImageItem::boundingRect() const
+{
+    return rect.normalized();
 }
 
-std::unique_ptr<Item> ImageItem::clone() const { return std::make_unique<ImageItem>(*this); }
+void ImageItem::paint(QPainter &p) const
+{
+    if (!image.isNull())
+        p.drawImage(rect, image);
+}
 
-QJsonObject ImageItem::toJson() const {
-    QJsonObject o; writeBase(o);
-    o["type"] = "image";
-    o["x"] = rect.x(); o["y"] = rect.y();
-    o["w"] = rect.width(); o["h"] = rect.height();
-    o["opacity"] = opacity;
+std::unique_ptr<Item> ImageItem::clone() const
+{
+    return std::make_unique<ImageItem>(*this);
+}
+
+void ImageItem::translate(const QPointF &delta)
+{
+    rect.translate(delta);
+}
+
+void ImageItem::write(QJsonObject &obj) const
+{
+    obj["type"] = "image";
+    obj["x"]    = rect.x();
+    obj["y"]    = rect.y();
+    obj["w"]    = rect.width();
+    obj["h"]    = rect.height();
+
     QByteArray bytes;
-    QBuffer buf(&bytes);
-    buf.open(QIODevice::WriteOnly);
-    image.save(&buf, "PNG");
-    o["png"] = QString::fromLatin1(bytes.toBase64());
-    return o;
+    QBuffer buffer(&bytes);
+    buffer.open(QIODevice::WriteOnly);
+    if (!image.isNull())
+        image.save(&buffer, "PNG");
+    buffer.close();
+    obj["data"] = QString::fromLatin1(bytes.toBase64());
 }
 
-std::unique_ptr<ImageItem> ImageItem::fromJsonImpl(const QJsonObject& o) {
-    auto im = std::make_unique<ImageItem>();
-    im->readBase(o);
-    im->rect = QRectF(o.value("x").toDouble(), o.value("y").toDouble(),
-                      o.value("w").toDouble(), o.value("h").toDouble());
-    im->opacity = o.value("opacity").toDouble(1.0);
-    const QByteArray png = QByteArray::fromBase64(o.value("png").toString().toLatin1());
-    im->image.loadFromData(png, "PNG");
-    return im;
-}
-
-} // namespace ib
-EOF
-
-# ---- model/Layer.cpp -------------------------------------------------------
-cat > src/model/Layer.cpp <<'EOF'
-#include "model/Layer.h"
-#include <QJsonArray>
-
-namespace ib {
-
-Layer Layer::clone() const {
-    Layer c;
-    c.id = QUuid::createUuid();
-    c.name = name; c.visible = visible; c.locked = locked; c.opacity = opacity;
-    c.items.reserve(items.size());
-    for (const auto& it : items) c.items.push_back(it->clone());
-    return c;
-}
-
-QJsonObject Layer::toJson() const {
-    QJsonObject o;
-    o["id"] = id.toString(QUuid::WithoutBraces);
-    o["name"] = name;
-    o["visible"] = visible;
-    o["locked"] = locked;
-    o["opacity"] = opacity;
-    QJsonArray arr;
-    for (const auto& it : items) arr.append(it->toJson());
-    o["items"] = arr;
-    return o;
-}
-
-Layer Layer::fromJson(const QJsonObject& o) {
-    Layer l;
-    const QUuid u(o.value("id").toString());
-    if (!u.isNull()) l.id = u;
-    l.name = o.value("name").toString("Layer");
-    l.visible = o.value("visible").toBool(true);
-    l.locked = o.value("locked").toBool(false);
-    l.opacity = o.value("opacity").toDouble(1.0);
-    for (const auto& v : o.value("items").toArray()) {
-        if (auto it = Item::fromJson(v.toObject())) l.items.push_back(std::move(it));
-    }
-    return l;
+void ImageItem::read(const QJsonObject &obj)
+{
+    rect = QRectF(obj.value("x").toDouble(),
+                  obj.value("y").toDouble(),
+                  obj.value("w").toDouble(),
+                  obj.value("h").toDouble());
+    const QByteArray bytes = QByteArray::fromBase64(obj.value("data").toString().toLatin1());
+    image = QImage();
+    if (!bytes.isEmpty())
+        image.loadFromData(bytes, "PNG");
 }
 
 } // namespace ib
 EOF
 
-# ---- model/Page.cpp --------------------------------------------------------
-cat > src/model/Page.cpp <<'EOF'
-#include "model/Page.h"
-#include <QJsonArray>
-
-namespace ib {
-
-Page::Page() {
-    Layer base;
-    base.name = QStringLiteral("Layer 1");
-    layers.push_back(std::move(base));
-}
-
-Layer&       Page::active()       { return layers[size_t(qBound(0, activeLayer, int(layers.size())-1))]; }
-const Layer& Page::active() const { return layers[size_t(qBound(0, activeLayer, int(layers.size())-1))]; }
-
-QRectF Page::contentBounds() const {
-    QRectF r;
-    for (const auto& l : layers)
-        for (const auto& it : l.items)
-            r = r.isNull() ? it->boundingRect() : r.united(it->boundingRect());
-    return r;
-}
-
-Page Page::clone() const {
-    Page c;
-    c.id = QUuid::createUuid();
-    c.title = title;
-    c.background = background; c.bgColor = bgColor; c.gridColor = gridColor;
-    c.gridSpacing = gridSpacing; c.paperSize = paperSize; c.activeLayer = activeLayer;
-    c.layers.clear();
-    for (const auto& l : layers) c.layers.push_back(l.clone());
-    return c;
-}
-
-QJsonObject Page::toJson() const {
-    QJsonObject o;
-    o["id"] = id.toString(QUuid::WithoutBraces);
-    o["title"] = title;
-    o["bg"] = int(background);
-    o["bgColor"] = bgColor.name(QColor::HexArgb);
-    o["gridColor"] = gridColor.name(QColor::HexArgb);
-    o["gridSpacing"] = gridSpacing;
-    o["pw"] = paperSize.width(); o["ph"] = paperSize.height();
-    o["activeLayer"] = activeLayer;
-    QJsonArray arr;
-    for (const auto& l : layers) arr.append(l.toJson());
-    o["layers"] = arr;
-    return o;
-}
-
-Page Page::fromJson(const QJsonObject& o) {
-    Page p;
-    const QUuid u(o.value("id").toString());
-    if (!u.isNull()) p.id = u;
-    p.title = o.value("title").toString("Page");
-    p.background = BackgroundKind(o.value("bg").toInt(int(BackgroundKind::Grid)));
-    p.bgColor = QColor(o.value("bgColor").toString("#ffffffff"));
-    p.gridColor = QColor(o.value("gridColor").toString("#1c000000"));
-    p.gridSpacing = o.value("gridSpacing").toDouble(32.0);
-    p.paperSize = QSizeF(o.value("pw").toDouble(1920), o.value("ph").toDouble(1080));
-    p.activeLayer = o.value("activeLayer").toInt(0);
-    p.layers.clear();
-    for (const auto& v : o.value("layers").toArray())
-        p.layers.push_back(Layer::fromJson(v.toObject()));
-    if (p.layers.empty()) p.layers.push_back(Layer{});
-    return p;
-}
-
-} // namespace ib
-EOF
-
-# ---- model/History.cpp -----------------------------------------------------
-cat > src/model/History.cpp <<'EOF'
-#include "model/History.h"
-
-namespace ib {
-
-void History::push(Command cmd) {
-    if (cmd.redo) cmd.redo();
-    // drop any redo tail
-    if (m_index < int(m_stack.size())) m_stack.resize(size_t(m_index));
-    m_stack.push_back(std::move(cmd));
-    m_index = int(m_stack.size());
-    if (int(m_stack.size()) > m_limit) {
-        m_stack.erase(m_stack.begin());
-        m_index = int(m_stack.size());
-    }
-}
-
-void History::undo() {
-    if (!canUndo()) return;
-    --m_index;
-    if (m_stack[size_t(m_index)].undo) m_stack[size_t(m_index)].undo();
-}
-
-void History::redo() {
-    if (!canRedo()) return;
-    if (m_stack[size_t(m_index)].redo) m_stack[size_t(m_index)].redo();
-    ++m_index;
-}
-
-void History::clear() { m_stack.clear(); m_index = 0; }
-
-} // namespace ib
-EOF
-
-# ---- model/Document.cpp ----------------------------------------------------
+# ---------------------------------------------------------------------------
+#  src/model/Document.cpp
+# ---------------------------------------------------------------------------
 cat > src/model/Document.cpp <<'EOF'
 #include "model/Document.h"
-#include "model/History.h"
+
+#include <QUndoStack>
 
 namespace ib {
 
-Document::Document(QObject* parent) : QObject(parent), m_history(std::make_unique<History>()) {
-    m_pages.emplace_back();          // start with one page
+Document::Document(QObject *parent)
+    : QObject(parent)
+{
+    m_undo = new QUndoStack(this);
+    m_pages.emplace_back();
+
+    connect(m_undo, &QUndoStack::cleanChanged, this, [this](bool clean) {
+        setModified(!clean);
+    });
 }
+
 Document::~Document() = default;
 
-Page&       Document::page(int i)       { return m_pages[size_t(qBound(0, i, pageCount()-1))]; }
-const Page& Document::page(int i) const { return m_pages[size_t(qBound(0, i, pageCount()-1))]; }
-Page&       Document::current()         { return page(m_current); }
-
-void Document::setCurrentIndex(int i) {
-    i = qBound(0, i, pageCount()-1);
-    if (i == m_current) return;
+void Document::setCurrentIndex(int i)
+{
+    if (i < 0 || i >= pageCount() || i == m_current)
+        return;
     m_current = i;
     emit currentPageChanged(m_current);
 }
 
-int Document::addPage() {
-    Page p; p.title = QStringLiteral("Page %1").arg(pageCount()+1);
-    m_pages.push_back(std::move(p));
-    setModified(true);
-    emit pagesChanged();
-    return pageCount()-1;
-}
-
-void Document::removePage(int i) {
-    if (pageCount() <= 1) return;
-    m_pages.erase(m_pages.begin() + qBound(0, i, pageCount()-1));
-    m_current = qBound(0, m_current, pageCount()-1);
-    setModified(true);
+void Document::addPage()
+{
+    m_pages.emplace_back();
+    m_current = pageCount() - 1;
+    markChanged();
     emit pagesChanged();
     emit currentPageChanged(m_current);
 }
 
-void Document::movePage(int from, int to) {
-    from = qBound(0, from, pageCount()-1);
-    to   = qBound(0, to,   pageCount()-1);
-    if (from == to) return;
-    Page tmp = std::move(m_pages[size_t(from)]);
-    m_pages.erase(m_pages.begin()+from);
-    m_pages.insert(m_pages.begin()+to, std::move(tmp));
-    setModified(true);
+void Document::removePage(int i)
+{
+    if (pageCount() <= 1 || i < 0 || i >= pageCount())
+        return;
+    m_pages.erase(m_pages.begin() + i);
+    if (m_current >= pageCount())
+        m_current = pageCount() - 1;
+    markChanged();
     emit pagesChanged();
+    emit currentPageChanged(m_current);
 }
 
-void Document::setModified(bool m) {
-    if (m == m_modified) return;
+void Document::setPages(std::vector<Page> &&pages)
+{
+    m_pages = std::move(pages);
+    if (m_pages.empty())
+        m_pages.emplace_back();
+    m_current = 0;
+    emit pagesChanged();
+    emit currentPageChanged(m_current);
+}
+
+void Document::setModified(bool m)
+{
+    if (m_modified == m)
+        return;
     m_modified = m;
     emit modifiedChanged(m_modified);
 }
 
-void Document::markContentChanged() {
-    setModified(true);
-    emit contentChanged();
-}
+} // namespace ib
+EOF
+
+log "PART 2 complete: item implementations and document model written."
+# ---------------------------------------------------------------------------
+#  END OF PART 2  —  append PART 3 (serializer, undo commands, exporter, settings) below
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+#  PART 3 of 6 : .iboard serializer, QUndoCommand classes, exporter, settings
+#  Append below PART 2. Creates new files only.
+# ---------------------------------------------------------------------------
+log "PART 3: writing serializer, undo commands, exporter, and settings"
+
+# ---------------------------------------------------------------------------
+#  src/core/Settings.h  — thin typed wrapper over QSettings
+# ---------------------------------------------------------------------------
+cat > src/core/Settings.h <<'EOF'
+#pragma once
+
+#include <QSettings>
+#include <QVariant>
+#include <QString>
+
+namespace ib {
+
+// Convenience typed access to persistent app settings (org/app set in main()).
+class Settings {
+public:
+    template <typename T>
+    static T get(const QString &key, const T &def)
+    {
+        QSettings s;
+        return s.value(key, QVariant::fromValue(def)).template value<T>();
+    }
+
+    template <typename T>
+    static void set(const QString &key, const T &value)
+    {
+        QSettings s;
+        s.setValue(key, QVariant::fromValue(value));
+    }
+};
 
 } // namespace ib
 EOF
 
-# ---- io/BoardSerializer.h --------------------------------------------------
-cat > src/io/BoardSerializer.h <<'EOF'
+# ---------------------------------------------------------------------------
+#  src/core/Serializer.h
+# ---------------------------------------------------------------------------
+cat > src/core/Serializer.h <<'EOF'
 #pragma once
+
+#include <QByteArray>
 #include <QString>
+#include <vector>
+
+#include "model/Page.h"
+
 namespace ib {
+
 class Document;
 
-// Native ".board" format = a versioned JSON document (self-contained: images
-// are embedded). Guarantees lossless round-trip of pages/layers/vector ink.
-namespace board {
-constexpr int kFormatVersion = 1;
+namespace io {
 
-bool save(const Document& doc, const QString& path, QString* error = nullptr);
-bool load(Document& doc, const QString& path, QString* error = nullptr);
+// Native ".iboard" format (JSON). Returns false and sets *error on failure.
+QByteArray toBytes(const Document &doc);
+bool fromBytes(std::vector<Page> &pagesOut, const QByteArray &bytes, QString *error = nullptr);
 
-// In-memory variants for autosave / crash recovery.
-QByteArray toBytes(const Document& doc);
-bool       fromBytes(Document& doc, const QByteArray& bytes, QString* error = nullptr);
-} // namespace board
+bool saveToFile(const Document &doc, const QString &path, QString *error = nullptr);
+bool loadFromFile(Document &doc, const QString &path, QString *error = nullptr);
+
+} // namespace io
 } // namespace ib
 EOF
 
-# ---- io/BoardSerializer.cpp ------------------------------------------------
-cat > src/io/BoardSerializer.cpp <<'EOF'
-#include "io/BoardSerializer.h"
+# ---------------------------------------------------------------------------
+#  src/core/Serializer.cpp
+# ---------------------------------------------------------------------------
+cat > src/core/Serializer.cpp <<'EOF'
+#include "core/Serializer.h"
+
 #include "model/Document.h"
+#include "model/Item.h"
+
 #include <QFile>
-#include <QJsonArray>
+#include <QSaveFile>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QSaveFile>
-
-namespace ib::board {
-
-QByteArray toBytes(const Document& doc) {
-    QJsonObject root;
-    root["format"] = "inkboard";
-    root["version"] = kFormatVersion;
-    root["current"] = doc.currentIndex();
-    QJsonArray pages;
-    for (int i = 0; i < doc.pageCount(); ++i) pages.append(doc.page(i).toJson());
-    root["pages"] = pages;
-    return QJsonDocument(root).toJson(QJsonDocument::Compact);
-}
-
-bool fromBytes(Document& doc, const QByteArray& bytes, QString* error) {
-    QJsonParseError pe{};
-    const QJsonDocument jd = QJsonDocument::fromJson(bytes, &pe);
-    if (pe.error != QJsonParseError::NoError || !jd.isObject()) {
-        if (error) *error = QStringLiteral("Invalid board file: %1").arg(pe.errorString());
-        return false;
-    }
-    const QJsonObject root = jd.object();
-    if (root.value("format").toString() != "inkboard") {
-        if (error) *error = QStringLiteral("Not an InkBoard file.");
-        return false;
-    }
-    // Rebuild pages via a temp doc-like path: we mutate through public API.
-    // Simplicity: clear by removing extra pages then overwrite page(0..n).
-    const QJsonArray pages = root.value("pages").toArray();
-    if (pages.isEmpty()) { if (error) *error = "Empty board."; return false; }
-
-    // Ensure exactly pages.size() pages exist.
-    while (doc.pageCount() < pages.size()) doc.addPage();
-    while (doc.pageCount() > pages.size()) doc.removePage(doc.pageCount()-1);
-    for (int i = 0; i < pages.size(); ++i)
-        doc.page(i) = Page::fromJson(pages[i].toObject());
-
-    doc.setCurrentIndex(root.value("current").toInt(0));
-    doc.setModified(false);
-    doc.markContentChanged();
-    doc.setModified(false);
-    return true;
-}
-
-bool save(const Document& doc, const QString& path, QString* error) {
-    QSaveFile f(path);
-    if (!f.open(QIODevice::WriteOnly)) {
-        if (error) *error = QStringLiteral("Cannot write %1: %2").arg(path, f.errorString());
-        return false;
-    }
-    const QByteArray bytes = toBytes(doc);
-    if (f.write(bytes) != bytes.size()) {
-        if (error) *error = QStringLiteral("Short write to %1").arg(path);
-        return false;
-    }
-    if (!f.commit()) {
-        if (error) *error = QStringLiteral("Commit failed for %1: %2").arg(path, f.errorString());
-        return false;
-    }
-    return true;
-}
-
-bool load(Document& doc, const QString& path, QString* error) {
-    QFile f(path);
-    if (!f.open(QIODevice::ReadOnly)) {
-        if (error) *error = QStringLiteral("Cannot open %1: %2").arg(path, f.errorString());
-        return false;
-    }
-    return fromBytes(doc, f.readAll(), error);
-}
-
-} // namespace ib::board
-EOF
-
-log "PART 2 complete: model impls, smoothing/tessellation, history, and .board serializer written."
-# =============================================================================
-#  END OF PART 2  —  append PART 3 (canvas rendering + tablet/touch input) below
-# =============================================================================
-
-# =============================================================================
-#  PART 3  —  viewport transform, GPU canvas rendering, pen/touch input router
-#  Append below PART 2. Creates new files only.
-# =============================================================================
-log "PART 3: writing viewport, renderer, canvas widget, and input router"
-
-# ---- render/Viewport.h -----------------------------------------------------
-cat > src/render/Viewport.h <<'EOF'
-#pragma once
-#include <QPointF>
-#include <QRectF>
-#include <QSize>
-#include <QTransform>
-
-namespace ib::render {
-
-// Maps between infinite PAGE space and on-screen (logical) widget space.
-// Pure value type: pan (offset), zoom (scale), and optional rotation.
-class Viewport {
-public:
-    QPointF offset{0, 0};   // screen position of page origin (logical px)
-    double  scale = 1.0;    // page units -> screen px
-    double  rotation = 0.0; // radians (touch rotate gesture)
-
-    static constexpr double kMinScale = 0.05;
-    static constexpr double kMaxScale = 40.0;
-
-    QTransform core() const;          // rotation+scale (no translation)
-    QTransform pageToScreen() const;  // full transform
-    QTransform screenToPage() const { return pageToScreen().inverted(); }
-
-    QPointF toPage(const QPointF& s)   const { return screenToPage().map(s); }
-    QPointF toScreen(const QPointF& p) const { return pageToScreen().map(p); }
-
-    void panBy(const QPointF& deltaScreen) { offset += deltaScreen; }
-    void zoomAt(const QPointF& screenAnchor, double factor);
-    void rotateAt(const QPointF& screenAnchor, double deltaRad);
-
-    QRectF visiblePageRect(const QSize& widgetSize) const;
-    void fitTo(const QRectF& pageRect, const QSize& widgetSize, double margin = 40.0);
-};
-
-} // namespace ib::render
-EOF
-
-# ---- render/Viewport.cpp ---------------------------------------------------
-cat > src/render/Viewport.cpp <<'EOF'
-#include "render/Viewport.h"
-#include <QtGlobalStatic>
-#include <cmath>
-
-namespace ib::render {
-
-QTransform Viewport::core() const {
-    QTransform t;
-    t.rotateRadians(rotation);
-    t.scale(scale, scale);
-    return t;
-}
-
-QTransform Viewport::pageToScreen() const {
-    QTransform t;
-    t.translate(offset.x(), offset.y());
-    t.rotateRadians(rotation);
-    t.scale(scale, scale);
-    return t;
-}
-
-void Viewport::zoomAt(const QPointF& anchor, double factor) {
-    const QPointF pagePt = toPage(anchor);
-    scale = qBound(kMinScale, scale * factor, kMaxScale);
-    offset = anchor - core().map(pagePt);
-}
-
-void Viewport::rotateAt(const QPointF& anchor, double deltaRad) {
-    const QPointF pagePt = toPage(anchor);
-    rotation += deltaRad;
-    offset = anchor - core().map(pagePt);
-}
-
-QRectF Viewport::visiblePageRect(const QSize& s) const {
-    const QTransform inv = screenToPage();
-    QRectF r;
-    const QPointF c[4] = { inv.map(QPointF(0, 0)),      inv.map(QPointF(s.width(), 0)),
-                           inv.map(QPointF(0, s.height())), inv.map(QPointF(s.width(), s.height())) };
-    r = QRectF(c[0], c[0]);
-    for (const auto& p : c) {
-        r.setLeft(qMin(r.left(), p.x()));   r.setTop(qMin(r.top(), p.y()));
-        r.setRight(qMax(r.right(), p.x())); r.setBottom(qMax(r.bottom(), p.y()));
-    }
-    return r;
-}
-
-void Viewport::fitTo(const QRectF& pageRect, const QSize& s, double margin) {
-    if (pageRect.isEmpty() || s.isEmpty()) return;
-    rotation = 0.0;
-    const double sx = (s.width()  - 2 * margin) / pageRect.width();
-    const double sy = (s.height() - 2 * margin) / pageRect.height();
-    scale = qBound(kMinScale, qMin(sx, sy), kMaxScale);
-    const QPointF center = pageRect.center();
-    offset = QPointF(s.width() / 2.0, s.height() / 2.0) - core().map(center);
-}
-
-} // namespace ib::render
-EOF
-
-# ---- render/CanvasRenderer.h ----------------------------------------------
-cat > src/render/CanvasRenderer.h <<'EOF'
-#pragma once
-#include <QPainter>
-#include "render/Viewport.h"
-
-namespace ib {
-class Page;
-class Item;
-namespace render {
-
-// Stateless drawing of the vector document. The painter is transformed into
-// PAGE space, so all widths are page units and stay crisp at any zoom.
-class CanvasRenderer {
-public:
-    // Full page paint (background + all visible layers) clipped to widget rect.
-    static void paintPage(QPainter& p, const Page& page, const Viewport& vp,
-                          const QSize& widgetSize);
-
-    // Paints one item; assumes painter is already in page space + antialiased.
-    static void paintItem(QPainter& p, const Item& item);
-
-private:
-    static void paintBackground(QPainter& p, const Page& page, const QRectF& visPage);
-};
-
-} // namespace render
-} // namespace ib
-EOF
-
-# ---- render/CanvasRenderer.cpp --------------------------------------------
-cat > src/render/CanvasRenderer.cpp <<'EOF'
-#include "render/CanvasRenderer.h"
-#include "model/Page.h"
-#include "model/StrokeItem.h"
-#include "model/ShapeItem.h"
-#include "model/TextItem.h"
-#include "model/ImageItem.h"
-#include "ink/Tessellator.h"
-#include <QtMath>
-
-namespace ib::render {
-
-void CanvasRenderer::paintBackground(QPainter& p, const Page& page, const QRectF& vis) {
-    if (page.background == BackgroundKind::Blank) return;
-    QPen pen(page.gridColor);
-    pen.setCosmetic(true);          // 1px lines regardless of zoom
-    pen.setWidthF(1.0);
-    p.setPen(pen);
-    const double g = qMax(2.0, page.gridSpacing);
-    const double x0 = std::floor(vis.left() / g) * g;
-    const double y0 = std::floor(vis.top()  / g) * g;
-
-    if (page.background == BackgroundKind::Grid || page.background == BackgroundKind::Lines) {
-        for (double y = y0; y <= vis.bottom(); y += g)
-            p.drawLine(QPointF(vis.left(), y), QPointF(vis.right(), y));
-        if (page.background == BackgroundKind::Grid)
-            for (double x = x0; x <= vis.right(); x += g)
-                p.drawLine(QPointF(x, vis.top()), QPointF(x, vis.bottom()));
-    } else if (page.background == BackgroundKind::Dots) {
-        p.setBrush(page.gridColor);
-        p.setPen(Qt::NoPen);
-        for (double y = y0; y <= vis.bottom(); y += g)
-            for (double x = x0; x <= vis.right(); x += g)
-                p.drawEllipse(QPointF(x, y), 1.2, 1.2);
-    }
-}
-
-void CanvasRenderer::paintItem(QPainter& p, const Item& item) {
-    switch (item.type()) {
-    case ItemType::Stroke: {
-        const auto& s = static_cast<const StrokeItem&>(item);
-        p.save();
-        p.setPen(Qt::NoPen);
-        QColor c = s.color;
-        p.setOpacity(qBound(0.0, s.opacity, 1.0));
-        if (s.kind == InkKind::Highlighter)
-            p.setCompositionMode(QPainter::CompositionMode_Multiply);
-        p.setBrush(c);
-        p.drawPath(ink::buildRibbon(s.points(), s.baseWidth, s.pressureToWidth));
-        p.restore();
-        break;
-    }
-    case ItemType::Shape: {
-        const auto& sh = static_cast<const ShapeItem&>(item);
-        p.save();
-        p.setOpacity(qBound(0.0, sh.opacity, 1.0));
-        QPen pen(sh.strokeColor);
-        pen.setWidthF(sh.strokeWidth);
-        pen.setCapStyle(Qt::RoundCap);
-        pen.setJoinStyle(Qt::RoundJoin);
-        p.setPen(pen);
-        p.setBrush(sh.filled ? QBrush(sh.fillColor) : Qt::NoBrush);
-        const QRectF r = QRectF(sh.p1, sh.p2).normalized();
-        switch (sh.shape) {
-        case ShapeKind::Line:      p.drawLine(sh.p1, sh.p2); break;
-        case ShapeKind::Rectangle: p.drawRect(r); break;
-        case ShapeKind::Ellipse:   p.drawEllipse(r); break;
-        case ShapeKind::Arrow: {
-            p.drawLine(sh.p1, sh.p2);
-            const double a = std::atan2(sh.p2.y() - sh.p1.y(), sh.p2.x() - sh.p1.x());
-            const double len = qMax(8.0, sh.strokeWidth * 4.0);
-            const double spread = M_PI / 7.0;
-            const QPointF b1 = sh.p2 - QPointF(std::cos(a - spread), std::sin(a - spread)) * len;
-            const QPointF b2 = sh.p2 - QPointF(std::cos(a + spread), std::sin(a + spread)) * len;
-            p.setBrush(sh.strokeColor);
-            QPolygonF head; head << sh.p2 << b1 << b2;
-            p.drawPolygon(head);
-            break;
-        }
-        }
-        p.restore();
-        break;
-    }
-    case ItemType::Text: {
-        const auto& t = static_cast<const TextItem&>(item);
-        p.save();
-        p.setPen(t.color);
-        p.setFont(t.font);
-        const QRectF box(t.pos, QSizeF(t.wrapWidth > 0 ? t.wrapWidth : 100000, 100000));
-        p.drawText(box, (t.wrapWidth > 0 ? Qt::TextWordWrap : 0) | Qt::AlignLeft | Qt::AlignTop, t.text);
-        p.restore();
-        break;
-    }
-    case ItemType::Image: {
-        const auto& im = static_cast<const ImageItem&>(item);
-        p.save();
-        p.setOpacity(qBound(0.0, im.opacity, 1.0));
-        p.setRenderHint(QPainter::SmoothPixmapTransform, true);
-        p.drawImage(im.rect, im.image);
-        p.restore();
-        break;
-    }
-    }
-}
-
-void CanvasRenderer::paintPage(QPainter& p, const Page& page, const Viewport& vp,
-                               const QSize& widgetSize) {
-    // Infinite canvas: fill the whole widget with the page's paper color.
-    p.fillRect(QRect(QPoint(0, 0), widgetSize), page.bgColor);
-
-    p.setRenderHint(QPainter::Antialiasing, true);
-    p.setRenderHint(QPainter::TextAntialiasing, true);
-    p.setTransform(vp.pageToScreen());
-
-    const QRectF vis = vp.visiblePageRect(widgetSize);
-    p.setClipRect(vis);
-    paintBackground(p, page, vis);
-
-    for (const auto& layer : page.layers) {
-        if (!layer.visible) continue;
-        p.save();
-        p.setOpacity(p.opacity() * qBound(0.0, layer.opacity, 1.0));
-        for (const auto& it : layer.items) {
-            if (it->boundingRect().intersects(vis))
-                paintItem(p, *it);
-        }
-        p.restore();
-    }
-    p.resetTransform();
-    p.setClipping(false);
-}
-
-} // namespace ib::render
-EOF
-
-# ---- render/ICanvasHost.h --------------------------------------------------
-cat > src/render/ICanvasHost.h <<'EOF'
-#pragma once
-#include <QRectF>
-class QWidget;
-namespace ib {
-class Document;
-namespace render { class Viewport; }
-
-// Abstraction the tools use to reach the document/viewport and to request
-// repaints, without depending on the concrete widget class.
-class ICanvasHost {
-public:
-    virtual ~ICanvasHost() = default;
-    virtual Document* document() = 0;
-    virtual render::Viewport& viewport() = 0;
-    virtual void requestRepaint() = 0;
-    virtual QWidget* asWidget() = 0;
-};
-
-} // namespace ib
-EOF
-
-# ---- input/PressureCurve.h -------------------------------------------------
-cat > src/input/PressureCurve.h <<'EOF'
-#pragma once
-namespace ib::input {
-
-// Configurable pen pressure response. gamma<1 = softer (more ink at low
-// force); gamma>1 = firmer. min/max clamp the usable output band.
-class PressureCurve {
-public:
-    double gamma = 1.0;
-    double minOut = 0.0;
-    double maxOut = 1.0;
-
-    float apply(float raw) const;
-
-    static PressureCurve soft()  { return {0.6, 0.05, 1.0}; }
-    static PressureCurve firm()  { return {1.6, 0.0, 1.0}; }
-    static PressureCurve linear(){ return {1.0, 0.0, 1.0}; }
-};
-
-} // namespace ib::input
-EOF
-
-# ---- input/PressureCurve.cpp -----------------------------------------------
-cat > src/input/PressureCurve.cpp <<'EOF'
-#include "input/PressureCurve.h"
-#include <algorithm>
-#include <cmath>
-
-namespace ib::input {
-float PressureCurve::apply(float raw) const {
-    double x = std::clamp(double(raw), 0.0, 1.0);
-    double y = std::pow(x, gamma <= 0 ? 1.0 : gamma);
-    y = minOut + (maxOut - minOut) * y;
-    return float(std::clamp(y, 0.0, 1.0));
-}
-} // namespace ib::input
-EOF
-
-# ---- input/InputRouter.h ---------------------------------------------------
-cat > src/input/InputRouter.h <<'EOF'
-#pragma once
-#include <QObject>
-#include <QPointF>
-#include "model/Enums.h"
-#include "model/StrokePoint.h"
-#include "input/PressureCurve.h"
-
-class QTabletEvent;
-class QTouchEvent;
-class QMouseEvent;
-
-namespace ib::render { class Viewport; }
-namespace ib::input {
-
-// A normalized input sample handed to tools. Coordinates are provided in BOTH
-// spaces so tools can hit-test in page space and draw cursors in screen space.
-struct InputSample {
-    enum class Source { Pen, Mouse, Touch };
-    QPointF pagePos;
-    QPointF screenPos;
-    float   pressure = 1.0f;
-    float   tiltX = 0.0f;
-    float   tiltY = 0.0f;
-    qint64  tMs = 0;
-    Source  source = Source::Pen;
-    bool    eraser = false;   // pen flipped to eraser end
-};
-
-// Turns raw Qt events into high-level draw/gesture/hover signals and enforces
-// the pen-vs-touch policy (palm rejection, touch = gestures, pen = ink).
-class InputRouter : public QObject {
-    Q_OBJECT
-public:
-    explicit InputRouter(QObject* parent = nullptr) : QObject(parent) {}
-
-    TouchMode     touchMode = TouchMode::GestureOnly;
-    bool          fingerDrawing = false;   // allow finger to draw ink
-    PressureCurve pressure = PressureCurve::linear();
-
-    bool handleTablet(QTabletEvent* e, const render::Viewport& vp);
-    bool handleTouch (QTouchEvent*  e, const render::Viewport& vp);
-    bool handleMouse (QMouseEvent*  e, const render::Viewport& vp);
-    void setPenInProximity(bool prox, const QPointF& screenPos, const render::Viewport& vp);
-
-    bool penActive() const { return m_penDown || m_penProximity; }
-
-signals:
-    void drawBegin (const ib::input::InputSample& s);
-    void drawUpdate(const ib::input::InputSample& s);
-    void drawEnd   (const ib::input::InputSample& s);
-    void hoverMove (const ib::input::InputSample& s, bool inProximity);
-    void gesturePan   (const QPointF& deltaScreen);
-    void gestureZoom  (const QPointF& screenAnchor, double factor);
-    void gestureRotate(const QPointF& screenAnchor, double deltaRad);
-
-private:
-    InputSample make(const QPointF& screen, float pressure, InputSample::Source src,
-                     bool eraser, const render::Viewport& vp) const;
-
-    bool m_penDown = false;
-    bool m_penProximity = false;
-
-    // touch gesture state
-    bool    m_gestureActive = false;
-    bool    m_touchDrawActive = false;
-    QPointF m_lastCentroid;
-    double  m_lastDist = 0.0;
-    double  m_lastAngle = 0.0;
-    InputSample m_lastSample;
-};
-
-} // namespace ib::input
-EOF
-
-# ---- input/InputRouter.cpp -------------------------------------------------
-cat > src/input/InputRouter.cpp <<'EOF'
-#include "input/InputRouter.h"
-#include "render/Viewport.h"
-#include <QTabletEvent>
-#include <QTouchEvent>
-#include <QMouseEvent>
-#include <QDateTime>
-#include <cmath>
-
-namespace ib::input {
-
-InputSample InputRouter::make(const QPointF& screen, float pr, InputSample::Source src,
-                              bool eraser, const render::Viewport& vp) const {
-    InputSample s;
-    s.screenPos = screen;
-    s.pagePos = vp.toPage(screen);
-    s.pressure = pr;
-    s.source = src;
-    s.eraser = eraser;
-    s.tMs = QDateTime::currentMSecsSinceEpoch();
-    return s;
-}
-
-void InputRouter::setPenInProximity(bool prox, const QPointF& screenPos, const render::Viewport& vp) {
-    m_penProximity = prox;
-    InputSample s = make(screenPos, 0.0f, InputSample::Source::Pen, false, vp);
-    emit hoverMove(s, prox);
-}
-
-bool InputRouter::handleTablet(QTabletEvent* e, const render::Viewport& vp) {
-    const bool eraser = e->pointerType() == QPointingDevice::PointerType::Eraser;
-    const QPointF screen = e->position();
-    InputSample s = make(screen, pressure.apply(float(e->pressure())),
-                         InputSample::Source::Pen, eraser, vp);
-    s.tiltX = float(e->xTilt());
-    s.tiltY = float(e->yTilt());
-    m_penProximity = true;
-    m_lastSample = s;
-
-    switch (e->type()) {
-    case QEvent::TabletPress:   m_penDown = true;  emit drawBegin(s);  break;
-    case QEvent::TabletMove:
-        if (m_penDown) emit drawUpdate(s);
-        else           emit hoverMove(s, true);
-        break;
-    case QEvent::TabletRelease: m_penDown = false; emit drawEnd(s);    break;
-    default: return false;
-    }
-    e->accept();
-    return true;
-}
-
-bool InputRouter::handleMouse(QMouseEvent* e, const render::Viewport& vp) {
-    if (penActive()) return false;               // pen owns input when present
-    const QPointF screen = e->position();
-    InputSample s = make(screen, 1.0f, InputSample::Source::Mouse, false, vp);
-    m_lastSample = s;
-    switch (e->type()) {
-    case QEvent::MouseButtonPress:
-        if (e->button() == Qt::LeftButton) { m_penDown = false; emit drawBegin(s); }
-        break;
-    case QEvent::MouseMove:
-        if (e->buttons() & Qt::LeftButton) emit drawUpdate(s);
-        else                               emit hoverMove(s, false);
-        break;
-    case QEvent::MouseButtonRelease:
-        if (e->button() == Qt::LeftButton) emit drawEnd(s);
-        break;
-    default: return false;
-    }
-    return true;
-}
-
-bool InputRouter::handleTouch(QTouchEvent* e, const render::Viewport& vp) {
-    if (penActive()) { e->accept(); return true; }   // palm/touch rejection near pen
-
-    QList<QEventPoint> live;
-    for (const QEventPoint& p : e->points())
-        if (p.state() != QEventPoint::State::Released) live.push_back(p);
-
-    const int n = live.size();
-    if (n == 0 || e->type() == QEvent::TouchEnd || e->type() == QEvent::TouchCancel) {
-        if (m_touchDrawActive) { emit drawEnd(m_lastSample); m_touchDrawActive = false; }
-        m_gestureActive = false;
-        e->accept();
-        return true;
-    }
-
-    // centroid of active points
-    QPointF centroid(0, 0);
-    for (const auto& p : live) centroid += p.position();
-    centroid /= double(n);
-
-    if (n >= 2) {
-        if (m_touchDrawActive) { emit drawEnd(m_lastSample); m_touchDrawActive = false; }
-        const QPointF a = live[0].position(), b = live[1].position();
-        const double dist  = std::hypot(b.x() - a.x(), b.y() - a.y());
-        const double angle = std::atan2(b.y() - a.y(), b.x() - a.x());
-        if (m_gestureActive) {
-            emit gesturePan(centroid - m_lastCentroid);
-            if (m_lastDist > 1.0) emit gestureZoom(centroid, dist / m_lastDist);
-            emit gestureRotate(centroid, angle - m_lastAngle);
-        }
-        m_lastCentroid = centroid; m_lastDist = dist; m_lastAngle = angle;
-        m_gestureActive = true;
-    } else { // single finger
-        const QPointF sp = live[0].position();
-        if (fingerDrawing && touchMode == TouchMode::DrawAndGesture) {
-            InputSample s = make(sp, 1.0f, InputSample::Source::Touch, false, vp);
-            m_lastSample = s;
-            if (!m_touchDrawActive) { emit drawBegin(s); m_touchDrawActive = true; }
-            else                     emit drawUpdate(s);
-        } else if (touchMode != TouchMode::Ignore) {
-            if (m_gestureActive) emit gesturePan(sp - m_lastCentroid);
-            m_lastCentroid = sp; m_gestureActive = true;
-        }
-    }
-    e->accept();
-    return true;
-}
-
-} // namespace ib::input
-EOF
-
-# ---- render/CanvasWidget.h -------------------------------------------------
-cat > src/render/CanvasWidget.h <<'EOF'
-#pragma once
-#include <QElapsedTimer>
-#include <QTimer>
-#include "render/ICanvasHost.h"
-#include "render/Viewport.h"
-#include "input/InputRouter.h"
-
-#ifdef INKBOARD_USE_OPENGL
-#include <QOpenGLWidget>
-using CanvasBase = QOpenGLWidget;
-#else
-#include <QWidget>
-using CanvasBase = QWidget;
-#endif
-
-namespace ib {
-class Document;
-class ToolManager;
-
-// The interactive drawing surface. Owns the Viewport, feeds raw events to the
-// InputRouter, and paints via CanvasRenderer + tool overlays. Implements
-// ICanvasHost so tools can drive it.
-class CanvasWidget : public CanvasBase, public ICanvasHost {
-    Q_OBJECT
-public:
-    explicit CanvasWidget(QWidget* parent = nullptr);
-    ~CanvasWidget() override;
-
-    void setDocument(Document* doc);
-    void setToolManager(ToolManager* tm);
-    input::InputRouter& router() { return m_router; }
-
-    // Pointer fade-out (laser/hover) configuration — requirement #5.
-    void setPointerVanishDelayMs(int ms) { m_vanishDelayMs = ms; }
-    void setPointerFadeMs(int ms) { m_fadeMs = ms; }
-
-    void zoomToFit();
-    void resetView();
-
-    // ICanvasHost
-    Document* document() override { return m_doc; }
-    render::Viewport& viewport() override { return m_vp; }
-    void requestRepaint() override { update(); }
-    QWidget* asWidget() override { return this; }
-
-protected:
-#ifdef INKBOARD_USE_OPENGL
-    void paintGL() override { paintCanvas(); }
-#else
-    void paintEvent(QPaintEvent*) override { paintCanvas(); }
-#endif
-    bool event(QEvent* e) override;
-    void tabletEvent(QTabletEvent* e) override;
-    void mousePressEvent(QMouseEvent* e) override;
-    void mouseMoveEvent(QMouseEvent* e) override;
-    void mouseReleaseEvent(QMouseEvent* e) override;
-    void wheelEvent(QWheelEvent* e) override;
-
-private:
-    void paintCanvas();
-    void drawPointerFx(QPainter& p);
-    void onProximityChanged(const input::InputSample& s, bool inProximity);
-
-    Document* m_doc = nullptr;
-    ToolManager* m_tools = nullptr;
-    render::Viewport m_vp;
-    input::InputRouter m_router;
-
-    // pointer fx
-    QPointF m_hoverPos;
-    bool    m_hoverVisible = false;
-    bool    m_hoverProx = false;
-    QElapsedTimer m_leaveClock;
-    QTimer  m_fxTimer;
-    int     m_vanishDelayMs = 250;
-    int     m_fadeMs = 450;
-};
-
-} // namespace ib
-EOF
-
-# ---- render/CanvasWidget.cpp -----------------------------------------------
-cat > src/render/CanvasWidget.cpp <<'EOF'
-#include "render/CanvasWidget.h"
-#include "render/CanvasRenderer.h"
-#include "model/Document.h"
-#include "tools/ToolManager.h"
-#include <QPainter>
-#include <QTabletEvent>
-#include <QTouchEvent>
-#include <QMouseEvent>
-#include <QWheelEvent>
-#include <cmath>
-
-namespace ib {
-
-CanvasWidget::CanvasWidget(QWidget* parent) : CanvasBase(parent) {
-    setAttribute(Qt::WA_AcceptTouchEvents, true);
-    setMouseTracking(true);
-    setFocusPolicy(Qt::StrongFocus);
-
-    m_fxTimer.setInterval(16); // ~60fps while fading
-    connect(&m_fxTimer, &QTimer::timeout, this, [this] {
-        update();
-        if (!m_hoverProx && m_leaveClock.isValid() &&
-            m_leaveClock.elapsed() > (m_vanishDelayMs + m_fadeMs)) {
-            m_hoverVisible = false;
-            m_fxTimer.stop();
-        }
-    });
-
-    // Wire router -> tools + view.
-    connect(&m_router, &input::InputRouter::drawBegin, this, [this](const input::InputSample& s){
-        if (m_tools) m_tools->onDrawBegin(s);
-    });
-    connect(&m_router, &input::InputRouter::drawUpdate, this, [this](const input::InputSample& s){
-        if (m_tools) m_tools->onDrawUpdate(s);
-    });
-    connect(&m_router, &input::InputRouter::drawEnd, this, [this](const input::InputSample& s){
-        if (m_tools) m_tools->onDrawEnd(s);
-    });
-    connect(&m_router, &input::InputRouter::hoverMove, this,
-            [this](const input::InputSample& s, bool prox){ onProximityChanged(s, prox); });
-    connect(&m_router, &input::InputRouter::gesturePan, this, [this](const QPointF& d){
-        m_vp.panBy(d); update();
-    });
-    connect(&m_router, &input::InputRouter::gestureZoom, this, [this](const QPointF& a, double f){
-        m_vp.zoomAt(a, f); update();
-    });
-    connect(&m_router, &input::InputRouter::gestureRotate, this, [this](const QPointF& a, double r){
-        m_vp.rotateAt(a, r); update();
-    });
-}
-
-CanvasWidget::~CanvasWidget() = default;
-
-void CanvasWidget::setDocument(Document* doc) {
-    if (m_doc == doc) return;
-    if (m_doc) m_doc->disconnect(this);
-    m_doc = doc;
-    if (m_doc) {
-        connect(m_doc, &Document::contentChanged, this, [this]{ update(); });
-        connect(m_doc, &Document::currentPageChanged, this, [this](int){ update(); });
-    }
-    update();
-}
-
-void CanvasWidget::setToolManager(ToolManager* tm) { m_tools = tm; }
-
-void CanvasWidget::zoomToFit() {
-    if (!m_doc) return;
-    const QRectF b = m_doc->current().contentBounds();
-    if (b.isEmpty()) { resetView(); return; }
-    m_vp.fitTo(b, size());
-    update();
-}
-
-void CanvasWidget::resetView() { m_vp = render::Viewport{}; update(); }
-
-void CanvasWidget::onProximityChanged(const input::InputSample& s, bool inProximity) {
-    m_hoverPos = s.screenPos;
-    m_hoverProx = inProximity;
-    if (inProximity) {
-        m_hoverVisible = true;
-        m_leaveClock.invalidate();
-        m_fxTimer.stop();
-    } else {
-        m_leaveClock.restart();     // begin vanish-delay + fade timeline
-        m_fxTimer.start();
-    }
-    if (m_tools) m_tools->onHover(s, inProximity);
-    update();
-}
-
-void CanvasWidget::paintCanvas() {
-    QPainter p(this);
-    if (m_doc) {
-        CanvasRenderer::paintPage(p, m_doc->current(), m_vp, size());
-        if (m_tools) m_tools->paintOverlay(p, m_vp);
-    } else {
-        p.fillRect(rect(), QColor(30, 31, 34));
-    }
-    drawPointerFx(p);
-}
-
-void CanvasWidget::drawPointerFx(QPainter& p) {
-    if (!m_hoverVisible) return;
-    double alpha = 1.0;
-    if (!m_hoverProx && m_leaveClock.isValid()) {
-        const qint64 e = m_leaveClock.elapsed();
-        if (e <= m_vanishDelayMs) alpha = 1.0;
-        else {
-            const double t = qBound(0.0, double(e - m_vanishDelayMs) / qMax(1, m_fadeMs), 1.0);
-            const double eased = 1.0 - std::pow(t, 3.0); // easeOutCubic fade
-            alpha = eased;
-        }
-    }
-    if (alpha <= 0.001) return;
-    p.save();
-    p.setRenderHint(QPainter::Antialiasing, true);
-    QColor ring(60, 90, 254);
-    ring.setAlphaF(0.85 * alpha);
-    QPen pen(ring); pen.setWidthF(1.5);
-    p.setPen(pen);
-    p.setBrush(Qt::NoBrush);
-    p.drawEllipse(m_hoverPos, 7, 7);
-    p.restore();
-}
-
-bool CanvasWidget::event(QEvent* e) {
-    switch (e->type()) {
-    case QEvent::TabletEnterProximity:
-        m_router.setPenInProximity(true, m_hoverPos, m_vp);
-        return true;
-    case QEvent::TabletLeaveProximity:
-        m_router.setPenInProximity(false, m_hoverPos, m_vp);
-        return true;
-    case QEvent::TouchBegin:
-    case QEvent::TouchUpdate:
-    case QEvent::TouchEnd:
-    case QEvent::TouchCancel:
-        if (m_router.handleTouch(static_cast<QTouchEvent*>(e), m_vp)) { update(); return true; }
-        break;
-    default: break;
-    }
-    return CanvasBase::event(e);
-}
-
-void CanvasWidget::tabletEvent(QTabletEvent* e) {
-    if (m_router.handleTablet(e, m_vp)) update();
-    else CanvasBase::tabletEvent(e);
-}
-void CanvasWidget::mousePressEvent(QMouseEvent* e)   { if (m_router.handleMouse(e, m_vp)) update(); }
-void CanvasWidget::mouseMoveEvent(QMouseEvent* e)    { if (m_router.handleMouse(e, m_vp)) update(); }
-void CanvasWidget::mouseReleaseEvent(QMouseEvent* e) { if (m_router.handleMouse(e, m_vp)) update(); }
-
-void CanvasWidget::wheelEvent(QWheelEvent* e) {
-    if (e->modifiers() & Qt::ControlModifier) {
-        const double f = std::pow(1.0015, e->angleDelta().y());
-        m_vp.zoomAt(e->position(), f);
-    } else if (e->modifiers() & Qt::ShiftModifier) {
-        m_vp.panBy(QPointF(e->angleDelta().y() / 2.0, 0));
-    } else {
-        m_vp.panBy(QPointF(e->angleDelta().x() / 2.0, e->angleDelta().y() / 2.0));
-    }
-    update();
-    e->accept();
-}
-
-} // namespace ib
-EOF
-
-log "PART 3 complete: viewport, GPU canvas renderer, pointer fade FX, and pen/touch router written."
-# =============================================================================
-#  END OF PART 3  —  append PART 4 (tools: pen/highlighter/eraser/select/...) below
-# =============================================================================
-
-# =============================================================================
-#  PART 4  —  tools: pen, highlighter, eraser, select, shapes, text, image, laser
-#  Append below PART 3. Creates new files only.
-# =============================================================================
-log "PART 4: writing tool settings, tool base, tool manager, and all tools"
-
-# ---- tools/ToolSettings.h --------------------------------------------------
-cat > src/tools/ToolSettings.h <<'EOF'
-#pragma once
+#include <QJsonArray>
+#include <QJsonParseError>
 #include <QColor>
-#include <QFont>
-#include <QList>
-#include <QVector>
-#include "model/Enums.h"
 
 namespace ib {
-
-// One shared, serializable bag of active-tool options. Deliberately lean:
-// each tool exposes only its essential settings.
-struct ToolSettings {
-    // Pen
-    QColor penColor = QColor(24, 24, 27);
-    double penSize = 3.0;
-    double penOpacity = 1.0;
-    bool   penPressureSize = true;
-    bool   penPressureOpacity = false;
-    double penSmoothing = 0.5;
-
-    // Highlighter
-    QColor hlColor = QColor(255, 214, 10);
-    double hlSize = 16.0;
-    double hlOpacity = 0.35;
-
-    // Eraser
-    enum class EraserMode { Stroke, Area };
-    EraserMode eraserMode = EraserMode::Stroke;
-    double eraserRadius = 12.0;
-
-    // Select
-    bool selectLasso = false;   // false = rectangle marquee
-
-    // Shape
-    ShapeKind shapeKind = ShapeKind::Line;
-    QColor shapeColor = QColor(24, 24, 27);
-    double shapeWidth = 3.0;
-    bool   shapeFilled = false;
-    QColor shapeFill = QColor(0, 0, 0, 40);
-    bool   snapping = true;     // snap endpoints to grid + 45deg lines
-
-    // Text
-    QFont  textFont = QFont("Sans", 18);
-    QColor textColor = QColor(24, 24, 27);
-
-    // Laser
-    QColor laserColor = QColor(255, 45, 60);
-    double laserSize = 8.0;
-    int    laserTrailMs = 650;  // fading trail length in time
-
-    // Presets (color palette + quick sizes)
-    QList<QColor> palette {
-        QColor("#18181b"), QColor("#ef4444"), QColor("#f59e0b"),
-        QColor("#10b981"), QColor("#3b82f6"), QColor("#8b5cf6"),
-        QColor("#ec4899"), QColor("#ffffff")
-    };
-    QVector<double> sizePresets { 1.5, 3.0, 6.0, 12.0 };
-};
-
-} // namespace ib
-EOF
-
-# ---- tools/Tool.h ----------------------------------------------------------
-cat > src/tools/Tool.h <<'EOF'
-#pragma once
-#include <QCursor>
-#include <QPainter>
-#include "input/InputRouter.h"
-#include "render/Viewport.h"
-
-namespace ib {
-class ToolManager;
-class ICanvasHost;
-class Document;
-struct ToolSettings;
-
-// Base class for every interactive tool. Tools reach the document, viewport,
-// settings, and undo helpers through the owning ToolManager.
-class Tool {
-public:
-    explicit Tool(ToolManager* mgr) : m_mgr(mgr) {}
-    virtual ~Tool() = default;
-
-    virtual ToolId id() const = 0;
-    virtual void onBegin (const input::InputSample&) {}
-    virtual void onUpdate(const input::InputSample&) {}
-    virtual void onEnd   (const input::InputSample&) {}
-    virtual void onHover (const input::InputSample&, bool /*proximity*/) {}
-    virtual void paintOverlay(QPainter&, const render::Viewport&) {}
-    virtual void cancel() {}
-    virtual QCursor cursor() const { return QCursor(Qt::CrossCursor); }
-
-protected:
-    ICanvasHost*  host() const;
-    Document*     doc() const;
-    ToolSettings& settings() const;
-
-    ToolManager* m_mgr;
-};
-
-} // namespace ib
-EOF
-
-# ---- tools/ToolManager.h ---------------------------------------------------
-cat > src/tools/ToolManager.h <<'EOF'
-#pragma once
-#include <QTransform>
-#include <QUuid>
-#include <functional>
-#include <memory>
-#include <unordered_map>
-#include <vector>
-#include "model/Item.h"
-#include "tools/ToolSettings.h"
-
-namespace ib {
-class ICanvasHost;
-class Document;
-class Page;
-class Layer;
-class History;
-class Tool;
-class SelectTool;
-class TextItem;
-
-// Applies an affine transform to an item, per concrete type (keeps strokes
-// vector-crisp by rebuilding their cached path).
-void transformItem(Item& item, const QTransform& xf);
-
-// Owns tools + settings, dispatches normalized input, and centralizes all
-// undoable document edits so every tool stays tiny.
-class ToolManager {
-public:
-    explicit ToolManager(ICanvasHost* host);
-    ~ToolManager();
-
-    ToolSettings& settings() { return m_settings; }
-    ICanvasHost*  host() const { return m_host; }
-    Document*     doc() const;
-
-    void   setActiveTool(ToolId id);
-    ToolId activeTool() const { return m_activeId; }
-
-    // Dispatch from CanvasWidget.
-    void onDrawBegin (const input::InputSample& s);
-    void onDrawUpdate(const input::InputSample& s);
-    void onDrawEnd   (const input::InputSample& s);
-    void onHover     (const input::InputSample& s, bool proximity);
-    void paintOverlay(QPainter& p, const render::Viewport& vp);
-    QCursor currentCursor() const;
-
-    // Convenience for menus / shortcuts.
-    void undo();
-    void redo();
-    void deleteSelection();
-    void copySelection();
-    void paste();
-    void selectAll();
-    void insertImageAtCenter(const class QImage& img);
-    void setTextEditRequester(std::function<void(TextItem*)> cb) { m_editText = std::move(cb); }
-    std::function<void(TextItem*)> textEditRequester() const { return m_editText; }
-
-    // Undoable primitives used by tools.
-    Layer&  activeLayer();
-    Page&   activePage();
-    History& history();
-    void commitAdd(ItemPtr item);
-    void commitRemove(const std::vector<QUuid>& ids);
-    void commitTransform(const std::vector<QUuid>& ids, const QTransform& xf);
-
-    Item* findItem(const QUuid& id);
-
-private:
-    ICanvasHost* m_host;
-    ToolSettings m_settings;
-    std::unordered_map<int, std::unique_ptr<Tool>> m_tools;
-    ToolId m_activeId = ToolId::Pen;
-    Tool*  m_strokeTool = nullptr;         // tool that owns the in-flight stroke
-    SelectTool* m_select = nullptr;
-    std::vector<ItemPtr> m_clipboard;
-    std::function<void(TextItem*)> m_editText;
-
-    Tool* toolFor(ToolId id);
-};
-
-} // namespace ib
-EOF
-
-# ---- tools/PenTool.h (+ shared InkStrokeTool) -----------------------------
-cat > src/tools/PenTool.h <<'EOF'
-#pragma once
-#include <memory>
-#include "tools/Tool.h"
-#include "model/StrokeItem.h"
-
-namespace ib {
-
-// Shared implementation for pressure-driven ink tools.
-class InkStrokeTool : public Tool {
-public:
-    using Tool::Tool;
-    void onBegin (const input::InputSample& s) override;
-    void onUpdate(const input::InputSample& s) override;
-    void onEnd   (const input::InputSample& s) override;
-    void cancel() override;
-    void paintOverlay(QPainter& p, const render::Viewport& vp) override;
-    QCursor cursor() const override { return QCursor(Qt::CrossCursor); }
-
-protected:
-    virtual std::unique_ptr<StrokeItem> makeStroke() const = 0;
-    std::unique_ptr<StrokeItem> m_live;
-};
-
-class PenTool final : public InkStrokeTool {
-public:
-    using InkStrokeTool::InkStrokeTool;
-    ToolId id() const override { return ToolId::Pen; }
-protected:
-    std::unique_ptr<StrokeItem> makeStroke() const override;
-};
-
-} // namespace ib
-EOF
-
-# ---- tools/PenTool.cpp -----------------------------------------------------
-cat > src/tools/PenTool.cpp <<'EOF'
-#include "tools/PenTool.h"
-#include "tools/ToolManager.h"
-#include "render/CanvasRenderer.h"
-
-namespace ib {
-
-void InkStrokeTool::onBegin(const input::InputSample& s) {
-    m_live = makeStroke();
-    StrokePoint p; p.pos = s.pagePos; p.pressure = s.pressure;
-    p.tiltX = s.tiltX; p.tiltY = s.tiltY; p.tMs = s.tMs;
-    m_live->addPoint(p);
-    if (host()) host()->requestRepaint();
-}
-
-void InkStrokeTool::onUpdate(const input::InputSample& s) {
-    if (!m_live) return;
-    StrokePoint p; p.pos = s.pagePos; p.pressure = s.pressure;
-    p.tiltX = s.tiltX; p.tiltY = s.tiltY; p.tMs = s.tMs;
-    m_live->addPoint(p);
-    if (host()) host()->requestRepaint();
-}
-
-void InkStrokeTool::onEnd(const input::InputSample& s) {
-    if (!m_live) return;
-    onUpdate(s);
-    if (m_live->points().size() >= 1) {
-        m_live->finalize();
-        m_mgr->commitAdd(std::move(m_live));
-    }
-    m_live.reset();
-    if (host()) host()->requestRepaint();
-}
-
-void InkStrokeTool::cancel() { m_live.reset(); if (host()) host()->requestRepaint(); }
-
-void InkStrokeTool::paintOverlay(QPainter& p, const render::Viewport& vp) {
-    if (!m_live) return;
-    p.save();
-    p.setRenderHint(QPainter::Antialiasing, true);
-    p.setTransform(vp.pageToScreen());
-    render::CanvasRenderer::paintItem(p, *m_live);
-    p.restore();
-}
-
-std::unique_ptr<StrokeItem> PenTool::makeStroke() const {
-    auto s = std::make_unique<StrokeItem>();
-    const ToolSettings& t = settings();
-    s->kind = InkKind::Pen;
-    s->color = t.penColor;
-    s->baseWidth = t.penSize;
-    s->opacity = t.penOpacity;
-    s->pressureToWidth = t.penPressureSize;
-    s->pressureToOpacity = t.penPressureOpacity;
-    s->smoothing = t.penSmoothing;
-    return s;
-}
-
-} // namespace ib
-EOF
-
-# ---- tools/HighlighterTool.h / .cpp ---------------------------------------
-cat > src/tools/HighlighterTool.h <<'EOF'
-#pragma once
-#include "tools/PenTool.h"
-namespace ib {
-class HighlighterTool final : public InkStrokeTool {
-public:
-    using InkStrokeTool::InkStrokeTool;
-    ToolId id() const override { return ToolId::Highlighter; }
-protected:
-    std::unique_ptr<StrokeItem> makeStroke() const override;
-};
-} // namespace ib
-EOF
-
-cat > src/tools/HighlighterTool.cpp <<'EOF'
-#include "tools/HighlighterTool.h"
-namespace ib {
-std::unique_ptr<StrokeItem> HighlighterTool::makeStroke() const {
-    auto s = std::make_unique<StrokeItem>();
-    const ToolSettings& t = settings();
-    s->kind = InkKind::Highlighter;
-    s->color = t.hlColor;
-    s->baseWidth = t.hlSize;
-    s->opacity = t.hlOpacity;
-    s->pressureToWidth = false;   // highlighters read best at constant width
-    s->pressureToOpacity = false;
-    s->smoothing = 0.4;
-    return s;
-}
-} // namespace ib
-EOF
-
-# ---- tools/EraserTool.h / .cpp --------------------------------------------
-cat > src/tools/EraserTool.h <<'EOF'
-#pragma once
-#include <QPointF>
-#include <QUuid>
-#include <vector>
-#include "tools/Tool.h"
-
-namespace ib {
-// Stroke eraser (removes whole items it touches) and area eraser (larger
-// brush). Also invoked automatically when the pen's eraser end is used.
-class EraserTool final : public Tool {
-public:
-    using Tool::Tool;
-    ToolId id() const override { return ToolId::Eraser; }
-    void onBegin (const input::InputSample& s) override;
-    void onUpdate(const input::InputSample& s) override;
-    void onEnd   (const input::InputSample& s) override;
-    void cancel() override;
-    void onHover (const input::InputSample& s, bool) override;
-    void paintOverlay(QPainter& p, const render::Viewport& vp) override;
-    QCursor cursor() const override { return QCursor(Qt::BlankCursor); }
-private:
-    void eraseAt(const QPointF& pagePos);
-    double radius() const;
-    std::vector<QUuid> m_pending;
-    QPointF m_cursorPage;
-    bool m_active = false;
-};
-} // namespace ib
-EOF
-
-cat > src/tools/EraserTool.cpp <<'EOF'
-#include "tools/EraserTool.h"
-#include "tools/ToolManager.h"
-#include "model/Document.h"
-#include "model/Page.h"
-
-namespace ib {
-
-double EraserTool::radius() const {
-    const ToolSettings& t = settings();
-    return t.eraserMode == ToolSettings::EraserMode::Area ? t.eraserRadius * 2.2 : t.eraserRadius;
-}
-
-void EraserTool::eraseAt(const QPointF& pos) {
-    Layer& layer = m_mgr->activeLayer();
-    const double r = radius();
-    for (const auto& it : layer.items) {
-        if (it->hitTest(pos, r)) {
-            const QUuid id = it->id();
-            if (std::find(m_pending.begin(), m_pending.end(), id) == m_pending.end())
-                m_pending.push_back(id);
-        }
-    }
-    if (host()) host()->requestRepaint();
-}
-
-void EraserTool::onBegin(const input::InputSample& s) {
-    m_active = true; m_pending.clear(); m_cursorPage = s.pagePos; eraseAt(s.pagePos);
-}
-void EraserTool::onUpdate(const input::InputSample& s) { m_cursorPage = s.pagePos; if (m_active) eraseAt(s.pagePos); }
-void EraserTool::onEnd(const input::InputSample& s) {
-    m_cursorPage = s.pagePos; m_active = false;
-    if (!m_pending.empty()) { m_mgr->commitRemove(m_pending); m_pending.clear(); }
-}
-void EraserTool::cancel() { m_active = false; m_pending.clear(); }
-void EraserTool::onHover(const input::InputSample& s, bool) { m_cursorPage = s.pagePos; if (host()) host()->requestRepaint(); }
-
-void EraserTool::paintOverlay(QPainter& p, const render::Viewport& vp) {
-    p.save();
-    const QPointF c = vp.toScreen(m_cursorPage);
-    const double r = radius() * vp.scale;
-    QPen pen(QColor(120, 120, 120)); pen.setWidthF(1.0);
-    p.setPen(pen); p.setBrush(QColor(160, 160, 160, 40));
-    p.drawEllipse(c, r, r);
-    p.restore();
-}
-
-} // namespace ib
-EOF
-
-# ---- tools/ShapeTool.h / .cpp ---------------------------------------------
-cat > src/tools/ShapeTool.h <<'EOF'
-#pragma once
-#include <memory>
-#include "tools/Tool.h"
-#include "model/ShapeItem.h"
-namespace ib {
-class ShapeTool final : public Tool {
-public:
-    using Tool::Tool;
-    ToolId id() const override { return ToolId::Shape; }
-    void onBegin (const input::InputSample& s) override;
-    void onUpdate(const input::InputSample& s) override;
-    void onEnd   (const input::InputSample& s) override;
-    void cancel() override;
-    void paintOverlay(QPainter& p, const render::Viewport& vp) override;
-private:
-    QPointF snap(const QPointF& p) const;
-    std::unique_ptr<ShapeItem> m_live;
-    QPointF m_start;
-};
-} // namespace ib
-EOF
-
-cat > src/tools/ShapeTool.cpp <<'EOF'
-#include "tools/ShapeTool.h"
-#include "tools/ToolManager.h"
-#include "render/CanvasRenderer.h"
-#include "model/Document.h"
-#include "model/Page.h"
-#include <cmath>
-
-namespace ib {
-
-QPointF ShapeTool::snap(const QPointF& p) const {
-    if (!settings().snapping) return p;
-    const double g = qMax(2.0, m_mgr->activePage().gridSpacing);
-    return QPointF(std::round(p.x() / g) * g, std::round(p.y() / g) * g);
-}
-
-void ShapeTool::onBegin(const input::InputSample& s) {
-    m_live = std::make_unique<ShapeItem>();
-    m_live->shape = settings().shapeKind;
-    m_live->strokeColor = settings().shapeColor;
-    m_live->strokeWidth = settings().shapeWidth;
-    m_live->filled = settings().shapeFilled;
-    m_live->fillColor = settings().shapeFill;
-    m_start = snap(s.pagePos);
-    m_live->p1 = m_start; m_live->p2 = m_start;
-    if (host()) host()->requestRepaint();
-}
-
-void ShapeTool::onUpdate(const input::InputSample& s) {
-    if (!m_live) return;
-    QPointF end = snap(s.pagePos);
-    // 45-degree constraint for line/arrow when snapping is on.
-    if (settings().snapping &&
-        (m_live->shape == ShapeKind::Line || m_live->shape == ShapeKind::Arrow)) {
-        const double dx = end.x() - m_start.x(), dy = end.y() - m_start.y();
-        const double a = std::atan2(dy, dx);
-        const double step = M_PI / 4.0;
-        const double snapped = std::round(a / step) * step;
-        const double len = std::hypot(dx, dy);
-        if (std::abs(std::remainder(a, step)) < 0.20)
-            end = m_start + QPointF(std::cos(snapped), std::sin(snapped)) * len;
-    }
-    m_live->p2 = end;
-    if (host()) host()->requestRepaint();
-}
-
-void ShapeTool::onEnd(const input::InputSample& s) {
-    if (!m_live) return;
-    onUpdate(s);
-    if (QLineF(m_live->p1, m_live->p2).length() > 0.5)
-        m_mgr->commitAdd(std::move(m_live));
-    m_live.reset();
-    if (host()) host()->requestRepaint();
-}
-
-void ShapeTool::cancel() { m_live.reset(); if (host()) host()->requestRepaint(); }
-
-void ShapeTool::paintOverlay(QPainter& p, const render::Viewport& vp) {
-    if (!m_live) return;
-    p.save();
-    p.setRenderHint(QPainter::Antialiasing, true);
-    p.setTransform(vp.pageToScreen());
-    render::CanvasRenderer::paintItem(p, *m_live);
-    p.restore();
-}
-
-} // namespace ib
-EOF
-
-# ---- tools/TextTool.h / .cpp ----------------------------------------------
-cat > src/tools/TextTool.h <<'EOF'
-#pragma once
-#include "tools/Tool.h"
-namespace ib {
-class TextTool final : public Tool {
-public:
-    using Tool::Tool;
-    ToolId id() const override { return ToolId::Text; }
-    void onEnd(const input::InputSample& s) override;
-    QCursor cursor() const override { return QCursor(Qt::IBeamCursor); }
-};
-} // namespace ib
-EOF
-
-cat > src/tools/TextTool.cpp <<'EOF'
-#include "tools/TextTool.h"
-#include "tools/ToolManager.h"
-#include "model/TextItem.h"
-
-namespace ib {
-void TextTool::onEnd(const input::InputSample& s) {
-    auto t = std::make_unique<TextItem>();
-    t->pos = s.pagePos;
-    t->font = settings().textFont;
-    t->color = settings().textColor;
-    t->text = QString();
-    TextItem* raw = t.get();
-    m_mgr->commitAdd(std::move(t));
-    if (auto cb = m_mgr->textEditRequester()) cb(raw);  // MainWindow opens editor
-    if (host()) host()->requestRepaint();
-}
-} // namespace ib
-EOF
-
-# ---- tools/ImageTool.h / .cpp ---------------------------------------------
-cat > src/tools/ImageTool.h <<'EOF'
-#pragma once
-#include <QImage>
-#include "tools/Tool.h"
-namespace ib {
-class ImageTool final : public Tool {
-public:
-    using Tool::Tool;
-    ToolId id() const override { return ToolId::Image; }
-    void setPending(const QImage& img) { m_pending = img; }
-    void onEnd(const input::InputSample& s) override;
-private:
-    QImage m_pending;
-};
-} // namespace ib
-EOF
-
-cat > src/tools/ImageTool.cpp <<'EOF'
-#include "tools/ImageTool.h"
-#include "tools/ToolManager.h"
-#include "model/ImageItem.h"
-
-namespace ib {
-void ImageTool::onEnd(const input::InputSample& s) {
-    if (m_pending.isNull()) return;
-    auto im = std::make_unique<ImageItem>();
-    im->image = m_pending;
-    const double w = m_pending.width(), h = m_pending.height();
-    im->rect = QRectF(s.pagePos, QSizeF(w, h));
-    m_mgr->commitAdd(std::move(im));
-    m_pending = QImage();
-    if (host()) host()->requestRepaint();
-}
-} // namespace ib
-EOF
-
-# ---- tools/LaserTool.h / .cpp ---------------------------------------------
-cat > src/tools/LaserTool.h <<'EOF'
-#pragma once
-#include <QTimer>
-#include <QPointF>
-#include <deque>
-#include "tools/Tool.h"
-namespace ib {
-// Ephemeral pointer: never persists to the document. Leaves a time-based
-// fading trail and auto-vanishes when the pen leaves proximity.
-class LaserTool final : public Tool {
-public:
-    explicit LaserTool(ToolManager* mgr);
-    ToolId id() const override { return ToolId::Laser; }
-    void onBegin (const input::InputSample& s) override;
-    void onUpdate(const input::InputSample& s) override;
-    void onEnd   (const input::InputSample& s) override;
-    void onHover (const input::InputSample& s, bool proximity) override;
-    void paintOverlay(QPainter& p, const render::Viewport& vp) override;
-    QCursor cursor() const override { return QCursor(Qt::BlankCursor); }
-private:
-    struct Dot { QPointF page; qint64 t; };
-    void push(const QPointF& page, qint64 t);
-    void prune();
-    std::deque<Dot> m_trail;
-    QPointF m_headPage;
-    bool m_headVisible = false;
-    QTimer m_timer;
-};
-} // namespace ib
-EOF
-
-cat > src/tools/LaserTool.cpp <<'EOF'
-#include "tools/LaserTool.h"
-#include "tools/ToolManager.h"
-#include "render/ICanvasHost.h"
-#include <QDateTime>
-#include <QWidget>
-
-namespace ib {
-
-LaserTool::LaserTool(ToolManager* mgr) : Tool(mgr) {
-    m_timer.setInterval(16);
-    QObject::connect(&m_timer, &QTimer::timeout, host() ? host()->asWidget() : nullptr, [this]{
-        prune();
-        if (host()) host()->requestRepaint();
-        if (m_trail.empty() && !m_headVisible) m_timer.stop();
-    });
-}
-
-void LaserTool::push(const QPointF& page, qint64 t) {
-    m_trail.push_back({page, t});
-    m_headPage = page; m_headVisible = true;
-    if (!m_timer.isActive()) m_timer.start();
-}
-
-void LaserTool::prune() {
-    const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    const qint64 life = settings().laserTrailMs;
-    while (!m_trail.empty() && now - m_trail.front().t > life) m_trail.pop_front();
-}
-
-void LaserTool::onBegin(const input::InputSample& s)  { push(s.pagePos, s.tMs); }
-void LaserTool::onUpdate(const input::InputSample& s) { push(s.pagePos, s.tMs); }
-void LaserTool::onEnd(const input::InputSample&)      { m_headVisible = false; }
-void LaserTool::onHover(const input::InputSample& s, bool proximity) {
-    m_headVisible = proximity;
-    if (proximity) { m_headPage = s.pagePos; if (!m_timer.isActive()) m_timer.start(); }
-}
-
-void LaserTool::paintOverlay(QPainter& p, const render::Viewport& vp) {
-    prune();
-    if (m_trail.empty() && !m_headVisible) return;
-    p.save();
-    p.setRenderHint(QPainter::Antialiasing, true);
-    p.setPen(Qt::NoPen);
-    const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    const double life = qMax(1, settings().laserTrailMs);
-    const double baseR = settings().laserSize;
-    for (const auto& d : m_trail) {
-        const double age = double(now - d.t) / life;
-        const double a = qBound(0.0, 1.0 - age, 1.0);
-        if (a <= 0.01) continue;
-        QColor c = settings().laserColor; c.setAlphaF(0.45 * a);
-        const QPointF sp = vp.toScreen(d.page);
-        p.setBrush(c);
-        p.drawEllipse(sp, baseR * (0.5 + 0.5 * a), baseR * (0.5 + 0.5 * a));
-    }
-    if (m_headVisible) {
-        const QPointF sp = vp.toScreen(m_headPage);
-        QColor glow = settings().laserColor; glow.setAlphaF(0.28);
-        p.setBrush(glow); p.drawEllipse(sp, baseR * 1.8, baseR * 1.8);
-        QColor core = settings().laserColor; core.setAlphaF(0.95);
-        p.setBrush(core); p.drawEllipse(sp, baseR, baseR);
-    }
-    p.restore();
-}
-
-} // namespace ib
-EOF
-
-# ---- tools/SelectTool.h / .cpp --------------------------------------------
-cat > src/tools/SelectTool.h <<'EOF'
-#pragma once
-#include <QPolygonF>
-#include <QRectF>
-#include <QUuid>
-#include <vector>
-#include "tools/Tool.h"
-
-namespace ib {
-// Lasso/rectangle selection with move, uniform scale (corner handles), rotate
-// (top handle), and delete/copy/paste (driven by ToolManager).
-class SelectTool final : public Tool {
-public:
-    using Tool::Tool;
-    ToolId id() const override { return ToolId::Select; }
-    void onBegin (const input::InputSample& s) override;
-    void onUpdate(const input::InputSample& s) override;
-    void onEnd   (const input::InputSample& s) override;
-    void cancel() override;
-    void paintOverlay(QPainter& p, const render::Viewport& vp) override;
-    QCursor cursor() const override { return QCursor(Qt::ArrowCursor); }
-
-    const std::vector<QUuid>& selection() const { return m_selected; }
-    void setSelection(std::vector<QUuid> ids) { m_selected = std::move(ids); }
-    void clearSelection() { m_selected.clear(); }
-    QRectF selectionBounds() const;
-
-private:
-    enum class Phase { None, Marquee, Move, Scale, Rotate };
-    double handlePx() const { return 9.0; }
-    void computeSelection(const QRectF& rect, const QPolygonF& lasso, bool lassoMode);
-
-    Phase m_phase = Phase::None;
-    std::vector<QUuid> m_selected;
-    QRectF m_marquee;
-    QPolygonF m_lasso;
-    QPointF m_start, m_last;
-    QPointF m_scaleAnchor, m_rotCenter;
-    double  m_startDist = 1.0, m_startAngle = 0.0;
-    QTransform m_preview;
-};
-} // namespace ib
-EOF
-
-cat > src/tools/SelectTool.cpp <<'EOF'
-#include "tools/SelectTool.h"
-#include "tools/ToolManager.h"
-#include "render/CanvasRenderer.h"
-#include "model/Document.h"
-#include "model/Page.h"
-#include <cmath>
-
-namespace ib {
-
-QRectF SelectTool::selectionBounds() const {
-    QRectF r;
-    for (const QUuid& id : m_selected)
-        if (Item* it = m_mgr->findItem(id))
-            r = r.isNull() ? it->boundingRect() : r.united(it->boundingRect());
-    return r;
-}
-
-void SelectTool::computeSelection(const QRectF& rect, const QPolygonF& lasso, bool lassoMode) {
-    m_selected.clear();
-    Layer& layer = m_mgr->activeLayer();
-    for (const auto& it : layer.items) {
-        const QRectF b = it->boundingRect();
-        const bool hit = lassoMode ? lasso.containsPoint(b.center(), Qt::OddEvenFill)
-                                   : rect.intersects(b);
-        if (hit) m_selected.push_back(it->id());
-    }
-}
-
-void SelectTool::onBegin(const input::InputSample& s) {
-    const QPointF pg = s.pagePos;
-    m_start = m_last = pg;
-    m_preview = QTransform();
-    const double tolPage = handlePx() / qMax(0.001, host()->viewport().scale);
-
-    if (!m_selected.empty()) {
-        const QRectF b = selectionBounds();
-        // corner handles -> scale
-        const QPointF corners[4] = { b.topLeft(), b.topRight(), b.bottomRight(), b.bottomLeft() };
-        for (int i = 0; i < 4; ++i) {
-            if (QLineF(pg, corners[i]).length() <= tolPage * 1.5) {
-                m_phase = Phase::Scale;
-                m_scaleAnchor = corners[(i + 2) % 4];
-                m_startDist = qMax(1.0, QLineF(m_scaleAnchor, pg).length());
-                return;
-            }
-        }
-        // rotate handle above top-center
-        const QPointF rotHandle = QPointF(b.center().x(), b.top() - tolPage * 3.0);
-        if (QLineF(pg, rotHandle).length() <= tolPage * 1.5) {
-            m_phase = Phase::Rotate;
-            m_rotCenter = b.center();
-            m_startAngle = std::atan2(pg.y() - m_rotCenter.y(), pg.x() - m_rotCenter.x());
-            return;
-        }
-        if (b.contains(pg)) { m_phase = Phase::Move; return; }
-    }
-
-    // start a new marquee/lasso
-    m_phase = Phase::Marquee;
-    m_marquee = QRectF(pg, pg);
-    m_lasso.clear(); m_lasso << pg;
-}
-
-void SelectTool::onUpdate(const input::InputSample& s) {
-    const QPointF pg = s.pagePos;
-    switch (m_phase) {
-    case Phase::Marquee:
-        m_marquee = QRectF(m_start, pg).normalized();
-        m_lasso << pg;
-        break;
-    case Phase::Move:
-        m_preview = QTransform::fromTranslate(pg.x() - m_start.x(), pg.y() - m_start.y());
-        break;
-    case Phase::Scale: {
-        const double d = qMax(1.0, QLineF(m_scaleAnchor, pg).length());
-        const double f = qBound(0.05, d / m_startDist, 40.0);
-        m_preview = QTransform();
-        m_preview.translate(m_scaleAnchor.x(), m_scaleAnchor.y());
-        m_preview.scale(f, f);
-        m_preview.translate(-m_scaleAnchor.x(), -m_scaleAnchor.y());
-        break;
-    }
-    case Phase::Rotate: {
-        const double a = std::atan2(pg.y() - m_rotCenter.y(), pg.x() - m_rotCenter.x());
-        const double da = a - m_startAngle;
-        m_preview = QTransform();
-        m_preview.translate(m_rotCenter.x(), m_rotCenter.y());
-        m_preview.rotateRadians(da);
-        m_preview.translate(-m_rotCenter.x(), -m_rotCenter.y());
-        break;
-    }
-    default: break;
-    }
-    m_last = pg;
-    if (host()) host()->requestRepaint();
-}
-
-void SelectTool::onEnd(const input::InputSample&) {
-    switch (m_phase) {
-    case Phase::Marquee:
-        computeSelection(m_marquee, m_lasso, settings().selectLasso);
-        break;
-    case Phase::Move:
-    case Phase::Scale:
-    case Phase::Rotate:
-        if (!m_preview.isIdentity() && !m_selected.empty())
-            m_mgr->commitTransform(m_selected, m_preview);
-        break;
-    default: break;
-    }
-    m_preview = QTransform();
-    m_phase = Phase::None;
-    if (host()) host()->requestRepaint();
-}
-
-void SelectTool::cancel() { m_phase = Phase::None; m_preview = QTransform(); }
-
-void SelectTool::paintOverlay(QPainter& p, const render::Viewport& vp) {
-    p.save();
-    // marquee (screen space)
-    if (m_phase == Phase::Marquee) {
-        QPen pen(QColor(60, 90, 254)); pen.setStyle(Qt::DashLine); pen.setWidthF(1.0);
-        p.setPen(pen); p.setBrush(QColor(60, 90, 254, 28));
-        if (settings().selectLasso) {
-            QPolygonF poly;
-            for (const QPointF& pt : m_lasso) poly << vp.toScreen(pt);
-            p.drawPolygon(poly);
-        } else {
-            p.drawRect(QRectF(vp.toScreen(m_marquee.topLeft()), vp.toScreen(m_marquee.bottomRight())));
-        }
-    }
-
-    if (!m_selected.empty()) {
-        // live preview of the transformed items (ghost)
-        if (!m_preview.isIdentity()) {
-            p.save();
-            p.setRenderHint(QPainter::Antialiasing, true);
-            p.setTransform(vp.pageToScreen());
-            p.setOpacity(0.75);
-            for (const QUuid& id : m_selected)
-                if (Item* it = m_mgr->findItem(id)) {
-                    auto ghost = it->clone();
-                    transformItem(*ghost, m_preview);
-                    render::CanvasRenderer::paintItem(p, *ghost);
-                }
-            p.restore();
-        }
-
-        // bounding box + handles (screen space, mapped through preview)
-        QRectF b = selectionBounds();
-        const QPointF c[4] = {
-            vp.toScreen(m_preview.map(b.topLeft())),  vp.toScreen(m_preview.map(b.topRight())),
-            vp.toScreen(m_preview.map(b.bottomRight())), vp.toScreen(m_preview.map(b.bottomLeft())) };
-        QPen pen(QColor(60, 90, 254)); pen.setWidthF(1.5);
-        p.setPen(pen); p.setBrush(Qt::NoBrush);
-        QPolygonF box; box << c[0] << c[1] << c[2] << c[3];
-        p.drawPolygon(box);
-        p.setBrush(QColor(255, 255, 255));
-        for (const QPointF& h : c) p.drawRect(QRectF(h - QPointF(4, 4), QSizeF(8, 8)));
-        // rotate handle
-        const QPointF top = (c[0] + c[1]) / 2.0;
-        const QPointF rot = top + QPointF(0, -22);
-        p.drawLine(top, rot);
-        p.drawEllipse(rot, 5, 5);
-    }
-    p.restore();
-}
-
-} // namespace ib
-EOF
-
-# ---- tools/ToolManager.cpp -------------------------------------------------
-cat > src/tools/ToolManager.cpp <<'EOF'
-#include "tools/ToolManager.h"
-#include "tools/Tool.h"
-#include "tools/PenTool.h"
-#include "tools/HighlighterTool.h"
-#include "tools/EraserTool.h"
-#include "tools/SelectTool.h"
-#include "tools/ShapeTool.h"
-#include "tools/TextTool.h"
-#include "tools/ImageTool.h"
-#include "tools/LaserTool.h"
-#include "render/ICanvasHost.h"
-#include "model/Document.h"
-#include "model/Page.h"
-#include "model/History.h"
-#include "model/StrokeItem.h"
-#include "model/ShapeItem.h"
-#include "model/TextItem.h"
-#include "model/ImageItem.h"
-#include <QImage>
-#include <algorithm>
-#include <cmath>
-#include <memory>
-
-namespace ib {
-
-// -------- Tool base accessors (need full ToolManager) ----------------------
-ICanvasHost*  Tool::host() const     { return m_mgr->host(); }
-Document*     Tool::doc() const      { return m_mgr->doc(); }
-ToolSettings& Tool::settings() const { return m_mgr->settings(); }
-
-// -------- transformItem ----------------------------------------------------
-void transformItem(Item& item, const QTransform& xf) {
-    switch (item.type()) {
-    case ItemType::Stroke: {
-        auto& s = static_cast<StrokeItem&>(item);
-        for (auto& p : s.points()) p.pos = xf.map(p.pos);
-        const double sm = s.smoothing; s.smoothing = 0.0; s.finalize(); s.smoothing = sm;
-        break;
-    }
-    case ItemType::Shape: {
-        auto& sh = static_cast<ShapeItem&>(item);
-        sh.p1 = xf.map(sh.p1); sh.p2 = xf.map(sh.p2);
-        break;
-    }
-    case ItemType::Text: {
-        auto& t = static_cast<TextItem&>(item);
-        t.pos = xf.map(t.pos);
-        const double sc = std::sqrt(std::abs(xf.determinant()));
-        if (t.font.pointSizeF() > 0 && std::abs(sc - 1.0) > 1e-3)
-            t.font.setPointSizeF(qMax(1.0, t.font.pointSizeF() * sc));
-        break;
-    }
-    case ItemType::Image: {
-        auto& im = static_cast<ImageItem&>(item);
-        im.rect = xf.mapRect(im.rect);
-        break;
-    }
-    }
-}
-
-// -------- ToolManager ------------------------------------------------------
-ToolManager::ToolManager(ICanvasHost* host) : m_host(host) {
-    m_tools[int(ToolId::Pen)]         = std::make_unique<PenTool>(this);
-    m_tools[int(ToolId::Highlighter)] = std::make_unique<HighlighterTool>(this);
-    m_tools[int(ToolId::Eraser)]      = std::make_unique<EraserTool>(this);
-    auto sel = std::make_unique<SelectTool>(this);
-    m_select = sel.get();
-    m_tools[int(ToolId::Select)]      = std::move(sel);
-    m_tools[int(ToolId::Shape)]       = std::make_unique<ShapeTool>(this);
-    m_tools[int(ToolId::Text)]        = std::make_unique<TextTool>(this);
-    m_tools[int(ToolId::Image)]       = std::make_unique<ImageTool>(this);
-    m_tools[int(ToolId::Laser)]       = std::make_unique<LaserTool>(this);
-    m_activeId = ToolId::Pen;
-}
-ToolManager::~ToolManager() = default;
-
-Document* ToolManager::doc() const { return m_host ? m_host->document() : nullptr; }
-
-Tool* ToolManager::toolFor(ToolId id) {
-    auto it = m_tools.find(int(id));
-    return it == m_tools.end() ? nullptr : it->second.get();
-}
-
-void ToolManager::setActiveTool(ToolId id) {
-    if (Tool* cur = toolFor(m_activeId)) cur->cancel();
-    m_activeId = id;
-    if (m_host) { m_host->asWidget()->setCursor(currentCursor()); m_host->requestRepaint(); }
-}
-
-QCursor ToolManager::currentCursor() const {
-    auto it = m_tools.find(int(m_activeId));
-    return it == m_tools.end() ? QCursor(Qt::ArrowCursor) : it->second->cursor();
-}
-
-// Dispatch: pen eraser end always routes to the eraser tool.
-void ToolManager::onDrawBegin(const input::InputSample& s) {
-    m_strokeTool = s.eraser ? toolFor(ToolId::Eraser) : toolFor(m_activeId);
-    if (m_strokeTool) m_strokeTool->onBegin(s);
-}
-void ToolManager::onDrawUpdate(const input::InputSample& s) { if (m_strokeTool) m_strokeTool->onUpdate(s); }
-void ToolManager::onDrawEnd(const input::InputSample& s) {
-    if (m_strokeTool) { m_strokeTool->onEnd(s); m_strokeTool = nullptr; }
-}
-void ToolManager::onHover(const input::InputSample& s, bool proximity) {
-    if (Tool* t = toolFor(m_activeId)) t->onHover(s, proximity);
-}
-void ToolManager::paintOverlay(QPainter& p, const render::Viewport& vp) {
-    if (Tool* t = toolFor(m_activeId)) t->paintOverlay(p, vp);
-    if (m_strokeTool && m_strokeTool != toolFor(m_activeId)) m_strokeTool->paintOverlay(p, vp);
-}
-
-// -------- document access --------------------------------------------------
-Page&    ToolManager::activePage()  { return doc()->current(); }
-Layer&   ToolManager::activeLayer() { return activePage().active(); }
-History& ToolManager::history()     { return doc()->history(); }
-
-Item* ToolManager::findItem(const QUuid& id) {
-    for (const auto& it : activeLayer().items) if (it->id() == id) return it.get();
-    return nullptr;
-}
-
-// -------- undoable primitives ----------------------------------------------
-void ToolManager::commitAdd(ItemPtr item) {
-    const QUuid id = item->id();
-    auto holder = std::make_shared<ItemPtr>(std::move(item));
-    Document* d = doc();
-    Command c;
-    c.label = "Add";
-    c.redo = [this, holder, d] {
-        if (*holder) { activeLayer().items.push_back(std::move(*holder)); d->markContentChanged(); }
-    };
-    c.undo = [this, holder, id, d] {
-        auto& items = activeLayer().items;
-        for (auto it = items.begin(); it != items.end(); ++it)
-            if ((*it)->id() == id) { *holder = std::move(*it); items.erase(it); break; }
-        d->markContentChanged();
-    };
-    history().push(std::move(c));
-}
-
-void ToolManager::commitRemove(const std::vector<QUuid>& ids) {
-    if (ids.empty()) return;
-    auto store = std::make_shared<std::vector<ItemPtr>>();
-    Document* d = doc();
-    Command c;
-    c.label = "Erase";
-    c.redo = [this, ids, store, d] {
-        store->clear();
-        auto& items = activeLayer().items;
-        for (const QUuid& id : ids)
-            for (auto it = items.begin(); it != items.end(); ++it)
-                if ((*it)->id() == id) { store->push_back(std::move(*it)); items.erase(it); break; }
-        d->markContentChanged();
-    };
-    c.undo = [this, store, d] {
-        auto& items = activeLayer().items;
-        for (auto& p : *store) items.push_back(std::move(p));
-        store->clear();
-        d->markContentChanged();
-    };
-    history().push(std::move(c));
-}
-
-void ToolManager::commitTransform(const std::vector<QUuid>& ids, const QTransform& xf) {
-    if (ids.empty() || xf.isIdentity()) return;
-    const QTransform inv = xf.inverted();
-    Document* d = doc();
-    Command c;
-    c.label = "Transform";
-    c.redo = [this, ids, xf, d] {
-        for (const QUuid& id : ids) if (Item* it = findItem(id)) transformItem(*it, xf);
-        d->markContentChanged();
-    };
-    c.undo = [this, ids, inv, d] {
-        for (const QUuid& id : ids) if (Item* it = findItem(id)) transformItem(*it, inv);
-        d->markContentChanged();
-    };
-    history().push(std::move(c));
-}
-
-// -------- menu / shortcut helpers ------------------------------------------
-void ToolManager::undo() { history().undo(); if (m_host) m_host->requestRepaint(); }
-void ToolManager::redo() { history().redo(); if (m_host) m_host->requestRepaint(); }
-
-void ToolManager::deleteSelection() {
-    if (!m_select) return;
-    commitRemove(m_select->selection());
-    m_select->clearSelection();
-    if (m_host) m_host->requestRepaint();
-}
-
-void ToolManager::copySelection() {
-    if (!m_select) return;
-    m_clipboard.clear();
-    for (const QUuid& id : m_select->selection())
-        if (Item* it = findItem(id)) m_clipboard.push_back(it->clone());
-}
-
-void ToolManager::paste() {
-    if (m_clipboard.empty()) return;
-    std::vector<QUuid> newIds;
-    const QTransform off = QTransform::fromTranslate(24, 24);
-    for (const auto& proto : m_clipboard) {
-        auto copy = proto->clone();
-        copy->setId(QUuid::createUuid());
-        transformItem(*copy, off);
-        newIds.push_back(copy->id());
-        commitAdd(std::move(copy));
-    }
-    setActiveTool(ToolId::Select);
-    if (m_select) m_select->setSelection(newIds);
-    if (m_host) m_host->requestRepaint();
-}
-
-void ToolManager::selectAll() {
-    if (!m_select) return;
-    std::vector<QUuid> ids;
-    for (const auto& it : activeLayer().items) ids.push_back(it->id());
-    setActiveTool(ToolId::Select);
-    m_select->setSelection(std::move(ids));
-    if (m_host) m_host->requestRepaint();
-}
-
-void ToolManager::insertImageAtCenter(const QImage& img) {
-    if (img.isNull()) return;
-    auto im = std::make_unique<ImageItem>();
-    im->image = img;
-    const QRectF vis = m_host->viewport().visiblePageRect(m_host->asWidget()->size());
-    const QPointF c = vis.center();
-    im->rect = QRectF(c - QPointF(img.width() / 2.0, img.height() / 2.0),
-                      QSizeF(img.width(), img.height()));
-    commitAdd(std::move(im));
-    if (m_host) m_host->requestRepaint();
-}
-
-} // namespace ib
-EOF
-
-log "PART 4 complete: all tools + undoable tool manager written."
-# =============================================================================
-#  END OF PART 5 target next: MainWindow, UI, theming, PDF/PNG/SVG, autosave
-# =============================================================================
-
-# =============================================================================
-#  PART 5  —  MainWindow, toolbars, palette, preferences, theming, shortcuts,
-#             PDF import/annotate, vector PDF/PNG/SVG export, autosave/recovery
-#  Append below PART 4. Creates new files only.
-# =============================================================================
-log "PART 5: writing UI shell, theming, shortcuts, exporters, PDF import, autosave"
-
-# ---- ui/ThemeManager.h / .cpp ---------------------------------------------
-cat > src/ui/ThemeManager.h <<'EOF'
-#pragma once
-#include <QColor>
-#include <QObject>
-namespace ib {
-// Light/Dark/System theme + accent color. Loads QSS from resources and
-// injects the accent color at runtime.
-class ThemeManager : public QObject {
-    Q_OBJECT
-public:
-    enum class Mode { System, Light, Dark };
-    explicit ThemeManager(QObject* parent = nullptr);
-    void apply();
-    void setMode(Mode m) { m_mode = m; apply(); }
-    void setAccent(const QColor& c) { m_accent = c; apply(); }
-    Mode mode() const { return m_mode; }
-    QColor accent() const { return m_accent; }
-private:
-    bool systemIsDark() const;
-    Mode m_mode = Mode::System;
-    QColor m_accent = QColor("#3d5afe");
-};
-} // namespace ib
-EOF
-
-cat > src/ui/ThemeManager.cpp <<'EOF'
-#include "ui/ThemeManager.h"
-#include <QApplication>
-#include <QFile>
-#include <QPalette>
-#include <QStyleHints>
-
-namespace ib {
-
-ThemeManager::ThemeManager(QObject* parent) : QObject(parent) {}
-
-bool ThemeManager::systemIsDark() const {
-    const auto scheme = QApplication::styleHints()->colorScheme();
-    return scheme == Qt::ColorScheme::Dark;
-}
-
-void ThemeManager::apply() {
-    const bool dark = (m_mode == Mode::Dark) || (m_mode == Mode::System && systemIsDark());
-    QFile f(dark ? ":/themes/dark.qss" : ":/themes/light.qss");
-    QString qss;
-    if (f.open(QIODevice::ReadOnly)) qss = QString::fromUtf8(f.readAll());
-    // Inject accent color where checked controls reference it.
-    qss += QString("\nQToolButton:checked { background: %1; }\n")
-               .arg(m_accent.name(QColor::HexArgb));
-    qApp->setStyleSheet(qss);
-}
-
-} // namespace ib
-EOF
-
-# ---- ui/ShortcutManager.h / .cpp ------------------------------------------
-cat > src/ui/ShortcutManager.h <<'EOF'
-#pragma once
-#include <QAction>
-#include <QKeySequence>
-#include <QList>
-#include <QObject>
-#include <QString>
-namespace ib {
-// Central registry of remappable shortcuts. Overrides persist in QSettings.
-class ShortcutManager : public QObject {
-    Q_OBJECT
-public:
-    struct Entry { QString name; QString label; QAction* action; QKeySequence def; };
-    explicit ShortcutManager(QObject* parent = nullptr) : QObject(parent) {}
-    void add(const QString& name, const QString& label, QAction* a, const QKeySequence& def);
-    void loadOverrides();
-    void setSequence(const QString& name, const QKeySequence& seq);
-    void resetToDefaults();
-    const QList<Entry>& entries() const { return m_entries; }
-private:
-    QList<Entry> m_entries;
-};
-} // namespace ib
-EOF
-
-cat > src/ui/ShortcutManager.cpp <<'EOF'
-#include "ui/ShortcutManager.h"
-#include "util/Settings.h"
-
-namespace ib {
-
-void ShortcutManager::add(const QString& name, const QString& label,
-                          QAction* a, const QKeySequence& def) {
-    a->setShortcut(def);
-    m_entries.push_back({name, label, a, def});
-}
-
-void ShortcutManager::loadOverrides() {
-    for (auto& e : m_entries) {
-        const QString key = "shortcuts/" + e.name;
-        const QString s = Settings::get<QString>(key, QString());
-        if (!s.isEmpty()) e.action->setShortcut(QKeySequence(s));
-    }
-}
-
-void ShortcutManager::setSequence(const QString& name, const QKeySequence& seq) {
-    for (auto& e : m_entries)
-        if (e.name == name) {
-            e.action->setShortcut(seq);
-            Settings::set<QString>("shortcuts/" + name, seq.toString());
-            break;
-        }
-}
-
-void ShortcutManager::resetToDefaults() {
-    for (auto& e : m_entries) {
-        e.action->setShortcut(e.def);
-        Settings::set<QString>("shortcuts/" + e.name, QString());
-    }
-}
-
-} // namespace ib
-EOF
-
-# ---- ui/ColorPalette.h / .cpp ---------------------------------------------
-cat > src/ui/ColorPalette.h <<'EOF'
-#pragma once
-#include <QColor>
-#include <QWidget>
-class QVBoxLayout;
-namespace ib {
-struct ToolSettings;
-// Dockable swatch palette + size presets. Emits selections; MainWindow routes
-// them to the active tool's relevant color/size.
-class ColorPalette : public QWidget {
-    Q_OBJECT
-public:
-    explicit ColorPalette(ToolSettings* settings, QWidget* parent = nullptr);
-    void rebuild();
-signals:
-    void colorPicked(const QColor& c);
-    void sizePicked(double s);
-    void customColorRequested();
-private:
-    ToolSettings* m_settings;
-    QVBoxLayout* m_root = nullptr;
-};
-} // namespace ib
-EOF
-
-cat > src/ui/ColorPalette.cpp <<'EOF'
-#include "ui/ColorPalette.h"
-#include "tools/ToolSettings.h"
-#include <QGridLayout>
-#include <QPushButton>
-#include <QLabel>
-#include <QVBoxLayout>
-
-namespace ib {
-
-ColorPalette::ColorPalette(ToolSettings* settings, QWidget* parent)
-    : QWidget(parent), m_settings(settings) {
-    m_root = new QVBoxLayout(this);
-    m_root->setContentsMargins(8, 8, 8, 8);
-    rebuild();
-}
-
-void ColorPalette::rebuild() {
-    QLayoutItem* item;
-    while ((item = m_root->takeAt(0)) != nullptr) {
-        if (item->widget()) item->widget()->deleteLater();
-        delete item;
-    }
-    m_root->addWidget(new QLabel(tr("Colors")));
-    auto* grid = new QGridLayout();
-    int i = 0;
-    for (const QColor& c : m_settings->palette) {
-        auto* b = new QPushButton();
-        b->setFixedSize(26, 26);
-        b->setStyleSheet(QString("background:%1;border:1px solid #0003;border-radius:6px;")
-                             .arg(c.name(QColor::HexArgb)));
-        connect(b, &QPushButton::clicked, this, [this, c] { emit colorPicked(c); });
-        grid->addWidget(b, i / 4, i % 4);
-        ++i;
-    }
-    auto* wrap = new QWidget(); wrap->setLayout(grid);
-    m_root->addWidget(wrap);
-
-    auto* custom = new QPushButton(tr("Custom color..."));
-    connect(custom, &QPushButton::clicked, this, [this] { emit customColorRequested(); });
-    m_root->addWidget(custom);
-
-    m_root->addWidget(new QLabel(tr("Size")));
-    auto* srow = new QGridLayout();
-    int j = 0;
-    for (double s : m_settings->sizePresets) {
-        auto* b = new QPushButton(QString::number(s));
-        connect(b, &QPushButton::clicked, this, [this, s] { emit sizePicked(s); });
-        srow->addWidget(b, 0, j++);
-    }
-    auto* swrap = new QWidget(); swrap->setLayout(srow);
-    m_root->addWidget(swrap);
-    m_root->addStretch(1);
-}
-
-} // namespace ib
-EOF
-
-# ---- ui/ToolBarWidget.h / .cpp --------------------------------------------
-cat > src/ui/ToolBarWidget.h <<'EOF'
-#pragma once
-#include <QToolBar>
-#include "model/Enums.h"
-namespace ib {
-class ShortcutManager;
-// Primary tool selector. Exclusive checkable actions per tool.
-class ToolBarWidget : public QToolBar {
-    Q_OBJECT
-public:
-    explicit ToolBarWidget(ShortcutManager* sc, QWidget* parent = nullptr);
-    void setActive(ToolId id);
-signals:
-    void toolSelected(ib::ToolId id);
-private:
-    QAction* add(const QString& text, ToolId id, const QKeySequence& key,
-                 ShortcutManager* sc, const QString& name);
-    QList<QAction*> m_actions;
-};
-} // namespace ib
-EOF
-
-cat > src/ui/ToolBarWidget.cpp <<'EOF'
-#include "ui/ToolBarWidget.h"
-#include "ui/ShortcutManager.h"
-#include <QActionGroup>
-
-namespace ib {
-
-ToolBarWidget::ToolBarWidget(ShortcutManager* sc, QWidget* parent) : QToolBar(parent) {
-    setMovable(true);
-    setWindowTitle(tr("Tools"));
-    auto* group = new QActionGroup(this);
-    group->setExclusive(true);
-    struct Def { const char* label; ToolId id; const char* key; const char* name; };
-    const Def defs[] = {
-        {"Pen", ToolId::Pen, "P", "tool.pen"},
-        {"Highlighter", ToolId::Highlighter, "H", "tool.highlighter"},
-        {"Eraser", ToolId::Eraser, "E", "tool.eraser"},
-        {"Select", ToolId::Select, "S", "tool.select"},
-        {"Shape", ToolId::Shape, "R", "tool.shape"},
-        {"Text", ToolId::Text, "T", "tool.text"},
-        {"Image", ToolId::Image, "I", "tool.image"},
-        {"Laser", ToolId::Laser, "L", "tool.laser"},
-    };
-    for (const auto& d : defs) {
-        QAction* a = add(tr(d.label), d.id, QKeySequence(QString(d.key)), sc, d.name);
-        group->addAction(a);
-    }
-    if (!m_actions.isEmpty()) m_actions.first()->setChecked(true);
-}
-
-QAction* ToolBarWidget::add(const QString& text, ToolId id, const QKeySequence& key,
-                            ShortcutManager* sc, const QString& name) {
-    QAction* a = addAction(text);
-    a->setCheckable(true);
-    a->setData(int(id));
-    connect(a, &QAction::triggered, this, [this, id] { emit toolSelected(id); });
-    if (sc) sc->add(name, text, a, key);
-    m_actions.push_back(a);
+namespace io {
+
+static QJsonArray colorToJson(const QColor &c)
+{
+    QJsonArray a;
+    a.append(c.red());
+    a.append(c.green());
+    a.append(c.blue());
+    a.append(c.alpha());
     return a;
 }
 
-void ToolBarWidget::setActive(ToolId id) {
-    for (QAction* a : m_actions)
-        if (a->data().toInt() == int(id)) { a->setChecked(true); break; }
+static QColor colorFromJson(const QJsonValue &v, const QColor &def)
+{
+    const QJsonArray a = v.toArray();
+    if (a.size() < 3)
+        return def;
+    const int alpha = a.size() >= 4 ? a.at(3).toInt(255) : 255;
+    return QColor(a.at(0).toInt(), a.at(1).toInt(), a.at(2).toInt(), alpha);
+}
+
+static ItemType typeFromString(const QString &s)
+{
+    if (s == QLatin1String("stroke")) return ItemType::Stroke;
+    if (s == QLatin1String("shape"))  return ItemType::Shape;
+    if (s == QLatin1String("text"))   return ItemType::Text;
+    return ItemType::Image;
+}
+
+static QJsonObject pageToJson(const Page &pg)
+{
+    QJsonObject o;
+    o["background"]  = static_cast<int>(pg.background);
+    o["bgColor"]     = colorToJson(pg.bgColor);
+    o["gridColor"]   = colorToJson(pg.gridColor);
+    o["gridSpacing"] = pg.gridSpacing;
+    o["activeLayer"] = pg.activeLayer;
+
+    QJsonArray layers;
+    for (const auto &ly : pg.layers) {
+        QJsonObject lo;
+        lo["name"]    = ly.name;
+        lo["visible"] = ly.visible;
+        lo["locked"]  = ly.locked;
+        lo["opacity"] = ly.opacity;
+
+        QJsonArray items;
+        for (const auto &it : ly.items) {
+            QJsonObject io;
+            it->write(io);
+            items.append(io);
+        }
+        lo["items"] = items;
+        layers.append(lo);
+    }
+    o["layers"] = layers;
+    return o;
+}
+
+static Page pageFromJson(const QJsonObject &o)
+{
+    Page pg;
+    pg.background   = static_cast<BackgroundKind>(
+        o.value("background").toInt(static_cast<int>(BackgroundKind::Grid)));
+    pg.bgColor      = colorFromJson(o.value("bgColor"), QColor(255, 255, 255));
+    pg.gridColor    = colorFromJson(o.value("gridColor"), QColor(223, 223, 223));
+    pg.gridSpacing  = o.value("gridSpacing").toDouble(40.0);
+
+    pg.layers.clear();
+    const QJsonArray layers = o.value("layers").toArray();
+    for (const auto &lv : layers) {
+        const QJsonObject lo = lv.toObject();
+        Layer ly;
+        ly.name    = lo.value("name").toString(QStringLiteral("Layer"));
+        ly.visible = lo.value("visible").toBool(true);
+        ly.locked  = lo.value("locked").toBool(false);
+        ly.opacity = lo.value("opacity").toDouble(1.0);
+
+        const QJsonArray items = lo.value("items").toArray();
+        for (const auto &iv : items) {
+            const QJsonObject io = iv.toObject();
+            ItemPtr item = makeItem(typeFromString(io.value("type").toString()));
+            if (item) {
+                item->read(io);
+                ly.items.push_back(std::move(item));
+            }
+        }
+        pg.layers.push_back(std::move(ly));
+    }
+    if (pg.layers.empty())
+        pg.layers.emplace_back();
+
+    pg.activeLayer = o.value("activeLayer").toInt(0);
+    return pg;
+}
+
+QByteArray toBytes(const Document &doc)
+{
+    QJsonObject root;
+    root["format"]  = "inkboard";
+    root["version"] = 1;
+
+    QJsonArray pages;
+    for (int i = 0; i < doc.pageCount(); ++i)
+        pages.append(pageToJson(doc.page(i)));
+    root["pages"] = pages;
+
+    return QJsonDocument(root).toJson(QJsonDocument::Indented);
+}
+
+bool fromBytes(std::vector<Page> &pagesOut, const QByteArray &bytes, QString *error)
+{
+    QJsonParseError pe;
+    const QJsonDocument doc = QJsonDocument::fromJson(bytes, &pe);
+    if (pe.error != QJsonParseError::NoError) {
+        if (error) *error = pe.errorString();
+        return false;
+    }
+    const QJsonObject root = doc.object();
+    if (root.value("format").toString() != QLatin1String("inkboard")) {
+        if (error) *error = QStringLiteral("Not an InkBoard (.iboard) file.");
+        return false;
+    }
+
+    pagesOut.clear();
+    const QJsonArray pages = root.value("pages").toArray();
+    for (const auto &pv : pages)
+        pagesOut.push_back(pageFromJson(pv.toObject()));
+    if (pagesOut.empty())
+        pagesOut.emplace_back();
+    return true;
+}
+
+bool saveToFile(const Document &doc, const QString &path, QString *error)
+{
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) {
+        if (error) *error = file.errorString();
+        return false;
+    }
+    const QByteArray bytes = toBytes(doc);
+    if (file.write(bytes) != bytes.size()) {
+        if (error) *error = file.errorString();
+        return false;
+    }
+    if (!file.commit()) {
+        if (error) *error = file.errorString();
+        return false;
+    }
+    return true;
+}
+
+bool loadFromFile(Document &doc, const QString &path, QString *error)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (error) *error = file.errorString();
+        return false;
+    }
+    const QByteArray bytes = file.readAll();
+    std::vector<Page> pages;
+    if (!fromBytes(pages, bytes, error))
+        return false;
+
+    doc.setPages(std::move(pages));
+    doc.setFilePath(path);
+    return true;
+}
+
+} // namespace io
+} // namespace ib
+EOF
+
+# ---------------------------------------------------------------------------
+#  src/core/Commands.h  — undoable operations (add / remove / translate)
+# ---------------------------------------------------------------------------
+cat > src/core/Commands.h <<'EOF'
+#pragma once
+
+#include <QUndoCommand>
+#include <QPointF>
+#include <QString>
+#include <vector>
+
+#include "model/Item.h"
+
+namespace ib {
+
+class Document;
+struct Layer;
+
+// Add a single item to a layer.
+class AddItemCommand : public QUndoCommand {
+public:
+    AddItemCommand(Document *doc, int page, int layer, ItemPtr item,
+                   const QString &text = QString());
+    void undo() override;
+    void redo() override;
+
+private:
+    Layer &layerRef();
+    Document *m_doc;
+    int       m_page;
+    int       m_layer;
+    ItemPtr   m_item;
+    Item     *m_raw = nullptr;
+};
+
+// Remove a set of items (identified by raw pointer) from a layer.
+class RemoveItemsCommand : public QUndoCommand {
+public:
+    RemoveItemsCommand(Document *doc, int page, int layer,
+                       std::vector<Item *> targets, const QString &text = QString());
+    void undo() override;
+    void redo() override;
+
+private:
+    Layer &layerRef();
+    struct Removed {
+        std::size_t index;
+        ItemPtr     item;
+    };
+    Document           *m_doc;
+    int                 m_page;
+    int                 m_layer;
+    std::vector<Item *> m_targets;
+    std::vector<Removed> m_removed;
+};
+
+// Translate a set of items by a fixed delta.
+class TranslateItemsCommand : public QUndoCommand {
+public:
+    TranslateItemsCommand(Document *doc, int page, int layer,
+                          std::vector<Item *> targets, QPointF delta,
+                          const QString &text = QString());
+    void undo() override;
+    void redo() override;
+
+private:
+    Document           *m_doc;
+    int                 m_page;
+    int                 m_layer;
+    std::vector<Item *> m_targets;
+    QPointF             m_delta;
+};
+
+} // namespace ib
+EOF
+
+# ---------------------------------------------------------------------------
+#  src/core/Commands.cpp
+# ---------------------------------------------------------------------------
+cat > src/core/Commands.cpp <<'EOF'
+#include "core/Commands.h"
+
+#include "model/Document.h"
+
+#include <algorithm>
+
+namespace ib {
+
+// ---- AddItemCommand -------------------------------------------------------
+AddItemCommand::AddItemCommand(Document *doc, int page, int layer, ItemPtr item,
+                               const QString &text)
+    : m_doc(doc), m_page(page), m_layer(layer), m_item(std::move(item))
+{
+    setText(text.isEmpty() ? QStringLiteral("Add") : text);
+}
+
+Layer &AddItemCommand::layerRef()
+{
+    Page &pg = m_doc->page(m_page);
+    if (m_layer < 0 || m_layer >= static_cast<int>(pg.layers.size()))
+        m_layer = 0;
+    return pg.layers[static_cast<std::size_t>(m_layer)];
+}
+
+void AddItemCommand::redo()
+{
+    Layer &ly = layerRef();
+    if (m_item) {
+        m_raw = m_item.get();
+        ly.items.push_back(std::move(m_item));
+    }
+    m_doc->markChanged();
+}
+
+void AddItemCommand::undo()
+{
+    Layer &ly = layerRef();
+    for (auto it = ly.items.begin(); it != ly.items.end(); ++it) {
+        if (it->get() == m_raw) {
+            m_item = std::move(*it);
+            ly.items.erase(it);
+            break;
+        }
+    }
+    m_doc->markChanged();
+}
+
+// ---- RemoveItemsCommand ---------------------------------------------------
+RemoveItemsCommand::RemoveItemsCommand(Document *doc, int page, int layer,
+                                       std::vector<Item *> targets, const QString &text)
+    : m_doc(doc), m_page(page), m_layer(layer), m_targets(std::move(targets))
+{
+    setText(text.isEmpty() ? QStringLiteral("Delete") : text);
+}
+
+Layer &RemoveItemsCommand::layerRef()
+{
+    Page &pg = m_doc->page(m_page);
+    if (m_layer < 0 || m_layer >= static_cast<int>(pg.layers.size()))
+        m_layer = 0;
+    return pg.layers[static_cast<std::size_t>(m_layer)];
+}
+
+void RemoveItemsCommand::redo()
+{
+    Layer &ly = layerRef();
+    m_removed.clear();
+    for (std::size_t i = 0; i < ly.items.size();) {
+        Item *raw = ly.items[i].get();
+        if (std::find(m_targets.begin(), m_targets.end(), raw) != m_targets.end()) {
+            m_removed.push_back({i, std::move(ly.items[i])});
+            ly.items.erase(ly.items.begin() + static_cast<std::ptrdiff_t>(i));
+        } else {
+            ++i;
+        }
+    }
+    m_doc->markChanged();
+}
+
+void RemoveItemsCommand::undo()
+{
+    Layer &ly = layerRef();
+    std::sort(m_removed.begin(), m_removed.end(),
+              [](const Removed &a, const Removed &b) { return a.index < b.index; });
+    for (auto &r : m_removed) {
+        std::size_t idx = std::min(r.index, ly.items.size());
+        ly.items.insert(ly.items.begin() + static_cast<std::ptrdiff_t>(idx),
+                        std::move(r.item));
+    }
+    m_removed.clear();
+    m_doc->markChanged();
+}
+
+// ---- TranslateItemsCommand ------------------------------------------------
+TranslateItemsCommand::TranslateItemsCommand(Document *doc, int page, int layer,
+                                             std::vector<Item *> targets, QPointF delta,
+                                             const QString &text)
+    : m_doc(doc), m_page(page), m_layer(layer),
+      m_targets(std::move(targets)), m_delta(delta)
+{
+    setText(text.isEmpty() ? QStringLiteral("Move") : text);
+}
+
+void TranslateItemsCommand::redo()
+{
+    for (Item *it : m_targets)
+        if (it) it->translate(m_delta);
+    m_doc->markChanged();
+}
+
+void TranslateItemsCommand::undo()
+{
+    for (Item *it : m_targets)
+        if (it) it->translate(-m_delta);
+    m_doc->markChanged();
 }
 
 } // namespace ib
 EOF
 
-# ---- io/Exporters.h / .cpp ------------------------------------------------
-cat > src/io/Exporters.h <<'EOF'
+# ---------------------------------------------------------------------------
+#  src/core/Exporter.h
+# ---------------------------------------------------------------------------
+cat > src/core/Exporter.h <<'EOF'
 #pragma once
+
 #include <QRectF>
 #include <QString>
+
 class QPainter;
+
 namespace ib {
+
 class Document;
-class Page;
-namespace exporters {
+struct Page;
 
-// Shared page painter: maps a page-space source rect into a device dst rect,
-// draws background + all visible items (vector-preserving).
-void renderPageInto(QPainter& p, const Page& page, QRectF src, QRectF dst, bool drawBg);
+namespace io {
 
-bool exportPng(const Page& page, const QString& path, double scale, QString* err = nullptr);
-bool exportSvg(const Page& page, const QString& path, QString* err = nullptr);
-bool exportPdf(const Document& doc, const QString& path, QString* err = nullptr); // vector
+// Render one page's content (mapping logical rect src -> device rect dst).
+void renderPage(QPainter &p, const Page &page, const QRectF &src,
+                const QRectF &dst, bool drawBackground);
 
-} // namespace exporters
+bool exportPng(const Page &page, const QString &path, double scale,
+               QString *error = nullptr);
+bool exportSvg(const Page &page, const QString &path, QString *error = nullptr);
+bool exportPdf(const Document &doc, const QString &path, QString *error = nullptr);
+
+} // namespace io
 } // namespace ib
 EOF
 
-cat > src/io/Exporters.cpp <<'EOF'
-#include "io/Exporters.h"
+# ---------------------------------------------------------------------------
+#  src/core/Exporter.cpp
+# ---------------------------------------------------------------------------
+cat > src/core/Exporter.cpp <<'EOF'
+#include "core/Exporter.h"
+
 #include "model/Document.h"
 #include "model/Page.h"
-#include "render/CanvasRenderer.h"
-#include <QImage>
+
 #include <QPainter>
-#include <QPageSize>
-#include <QPdfWriter>
+#include <QImage>
+#include <QSize>
+#include <QPen>
 #include <QSvgGenerator>
+#include <QPdfWriter>
+#include <QPageSize>
 #include <cmath>
 
-namespace ib::exporters {
+namespace ib {
+namespace io {
 
-static void drawGrid(QPainter& p, const Page& page, const QRectF& src) {
-    if (page.background == BackgroundKind::Blank) return;
-    QPen pen(page.gridColor); pen.setCosmetic(true); pen.setWidthF(1.0);
+static void drawBackgroundPattern(QPainter &p, const Page &pg, const QRectF &area)
+{
+    if (pg.background == BackgroundKind::Blank)
+        return;
+
+    const double s = qMax(4.0, pg.gridSpacing);
+    QPen pen(pg.gridColor);
+    pen.setWidthF(0.0); // cosmetic: always 1px on device
     p.setPen(pen);
-    const double g = qMax(2.0, page.gridSpacing);
-    if (page.background == BackgroundKind::Grid || page.background == BackgroundKind::Lines) {
-        for (double y = std::floor(src.top()/g)*g; y <= src.bottom(); y += g)
-            p.drawLine(QPointF(src.left(), y), QPointF(src.right(), y));
-        if (page.background == BackgroundKind::Grid)
-            for (double x = std::floor(src.left()/g)*g; x <= src.right(); x += g)
-                p.drawLine(QPointF(x, src.top()), QPointF(x, src.bottom()));
-    } else {
-        p.setBrush(page.gridColor); p.setPen(Qt::NoPen);
-        for (double y = std::floor(src.top()/g)*g; y <= src.bottom(); y += g)
-            for (double x = std::floor(src.left()/g)*g; x <= src.right(); x += g)
-                p.drawEllipse(QPointF(x, y), 1.2, 1.2);
+
+    const double startX = std::floor(area.left() / s) * s;
+    const double startY = std::floor(area.top() / s) * s;
+
+    if (pg.background == BackgroundKind::Grid) {
+        for (double x = startX; x <= area.right(); x += s)
+            p.drawLine(QPointF(x, area.top()), QPointF(x, area.bottom()));
+        for (double y = startY; y <= area.bottom(); y += s)
+            p.drawLine(QPointF(area.left(), y), QPointF(area.right(), y));
+    } else if (pg.background == BackgroundKind::Lines) {
+        for (double y = startY; y <= area.bottom(); y += s)
+            p.drawLine(QPointF(area.left(), y), QPointF(area.right(), y));
+    } else if (pg.background == BackgroundKind::Dots) {
+        p.setPen(Qt::NoPen);
+        p.setBrush(pg.gridColor);
+        for (double x = startX; x <= area.right(); x += s)
+            for (double y = startY; y <= area.bottom(); y += s)
+                p.drawEllipse(QPointF(x, y), 1.3, 1.3);
     }
 }
 
-void renderPageInto(QPainter& p, const Page& page, QRectF src, QRectF dst, bool drawBg) {
-    if (src.isEmpty()) src = QRectF(QPointF(0, 0), page.paperSize);
+void renderPage(QPainter &p, const Page &pg, const QRectF &src,
+                const QRectF &dst, bool drawBackground)
+{
     p.save();
-    if (drawBg) p.fillRect(dst, page.bgColor);
-    const double s = qMin(dst.width() / src.width(), dst.height() / src.height());
-    const double tx = dst.x() + (dst.width()  - src.width()  * s) / 2.0;
-    const double ty = dst.y() + (dst.height() - src.height() * s) / 2.0;
-    QTransform t;
-    t.translate(tx, ty); t.scale(s, s); t.translate(-src.x(), -src.y());
-    p.setTransform(t, true);
     p.setRenderHint(QPainter::Antialiasing, true);
     p.setRenderHint(QPainter::TextAntialiasing, true);
-    p.setClipRect(src);
-    drawGrid(p, page, src);
-    for (const auto& layer : page.layers) {
-        if (!layer.visible) continue;
+    p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+
+    p.setClipRect(dst);
+    p.translate(dst.topLeft());
+    const double sx = dst.width()  / (src.width()  <= 0 ? 1.0 : src.width());
+    const double sy = dst.height() / (src.height() <= 0 ? 1.0 : src.height());
+    p.scale(sx, sy);
+    p.translate(-src.topLeft());
+
+    if (drawBackground) {
+        p.fillRect(src, pg.bgColor);
+        drawBackgroundPattern(p, pg, src);
+    }
+
+    for (const auto &ly : pg.layers) {
+        if (!ly.visible)
+            continue;
         p.save();
-        p.setOpacity(qBound(0.0, layer.opacity, 1.0));
-        for (const auto& it : layer.items) render::CanvasRenderer::paintItem(p, *it);
+        if (ly.opacity < 1.0)
+            p.setOpacity(ly.opacity);
+        for (const auto &it : ly.items)
+            it->paint(p);
         p.restore();
     }
+
     p.restore();
 }
 
-bool exportPng(const Page& page, const QString& path, double scale, QString* err) {
-    QRectF src = page.contentBounds();
-    if (src.isEmpty()) src = QRectF(QPointF(0, 0), page.paperSize);
-    src = src.adjusted(-16, -16, 16, 16);
-    const int w = qMax(1, int(std::ceil(src.width()  * scale)));
-    const int h = qMax(1, int(std::ceil(src.height() * scale)));
-    QImage img(w, h, QImage::Format_ARGB32_Premultiplied);
+bool exportPng(const Page &pg, const QString &path, double scale, QString *error)
+{
+    QRectF b = pg.contentBounds();
+    if (b.isNull())
+        b = QRectF(0, 0, 1280, 720);
+    const double margin = 40.0;
+    b.adjust(-margin, -margin, margin, margin);
+
+    scale = qBound(0.1, scale, 8.0);
+    const QSize sz(qMax(1, static_cast<int>(b.width() * scale)),
+                   qMax(1, static_cast<int>(b.height() * scale)));
+
+    QImage img(sz, QImage::Format_ARGB32_Premultiplied);
     img.fill(Qt::transparent);
-    QPainter p(&img);
-    renderPageInto(p, page, src, QRectF(0, 0, w, h), true);
-    p.end();
-    if (!img.save(path, "PNG")) { if (err) *err = "PNG write failed: " + path; return false; }
-    return true;
-}
-
-bool exportSvg(const Page& page, const QString& path, QString* err) {
-    QRectF src = page.contentBounds();
-    if (src.isEmpty()) src = QRectF(QPointF(0, 0), page.paperSize);
-    src = src.adjusted(-16, -16, 16, 16);
-    QSvgGenerator gen;
-    gen.setFileName(path);
-    gen.setSize(QSize(int(src.width()), int(src.height())));
-    gen.setViewBox(QRectF(0, 0, src.width(), src.height()));
-    gen.setTitle("InkBoard export");
-    QPainter p(&gen);
-    if (!p.isActive()) { if (err) *err = "SVG init failed: " + path; return false; }
-    renderPageInto(p, page, src, QRectF(0, 0, src.width(), src.height()), true);
-    p.end();
-    return true;
-}
-
-bool exportPdf(const Document& doc, const QString& path, QString* err) {
-    if (doc.pageCount() == 0) { if (err) *err = "No pages"; return false; }
-    QPdfWriter writer(path);
-    writer.setResolution(300);
-    writer.setPageSize(QPageSize(doc.page(0).paperSize, QPageSize::Point));
-    QPainter p(&writer);
-    if (!p.isActive()) { if (err) *err = "PDF init failed: " + path; return false; }
-    for (int i = 0; i < doc.pageCount(); ++i) {
-        if (i > 0) {
-            writer.setPageSize(QPageSize(doc.page(i).paperSize, QPageSize::Point));
-            writer.newPage();
-        }
-        const Page& page = doc.page(i);
-        QRectF src = page.contentBounds();
-        if (src.isEmpty()) src = QRectF(QPointF(0, 0), page.paperSize);
-        const QRectF dst(0, 0, writer.width(), writer.height());
-        renderPageInto(p, page, src, dst, true);
+    {
+        QPainter p(&img);
+        renderPage(p, pg, b, QRectF(0, 0, sz.width(), sz.height()), true);
     }
-    p.end();
-    return true;
-}
-
-} // namespace ib::exporters
-EOF
-
-# ---- io/PdfImporter.h / .cpp ----------------------------------------------
-cat > src/io/PdfImporter.h <<'EOF'
-#pragma once
-#include <QString>
-namespace ib {
-class Document;
-namespace pdf {
-// Imports each PDF page as a high-resolution, locked background image on its
-// own document page so ink can be layered on top; export to PDF then keeps
-// the annotations as true vectors over the page.
-bool importInto(Document& doc, const QString& path, double dpi = 200.0, QString* err = nullptr);
-}
-} // namespace ib
-EOF
-
-cat > src/io/PdfImporter.cpp <<'EOF'
-#include "io/PdfImporter.h"
-#include "model/Document.h"
-#include "model/Page.h"
-#include "model/ImageItem.h"
-#include <QPdfDocument>
-#include <QImage>
-#include <cmath>
-
-namespace ib::pdf {
-
-bool importInto(Document& doc, const QString& path, double dpi, QString* err) {
-    QPdfDocument pdf;
-    const auto status = pdf.load(path);
-    if (status != QPdfDocument::Error::None) {
-        if (err) *err = "Cannot load PDF: " + path;
+    if (!img.save(path, "PNG")) {
+        if (error) *error = QStringLiteral("Failed to write PNG file.");
         return false;
     }
-    const int n = pdf.pageCount();
-    if (n <= 0) { if (err) *err = "Empty PDF"; return false; }
-
-    const double scale = dpi / 72.0;
-    bool first = true;
-    for (int i = 0; i < n; ++i) {
-        const QSizeF ptSize = pdf.pagePointSize(i);
-        const QSize px(qMax(1, int(std::ceil(ptSize.width()  * scale))),
-                       qMax(1, int(std::ceil(ptSize.height() * scale))));
-        const QImage img = pdf.render(i, px);
-        if (img.isNull()) continue;
-
-        int idx = first ? doc.currentIndex() : doc.addPage();
-        first = false;
-        Page& page = doc.page(idx);
-        page.title = QStringLiteral("PDF %1").arg(i + 1);
-        page.paperSize = ptSize;
-        page.background = BackgroundKind::Blank;
-
-        // Background layer (locked) with the page raster in page-point coords.
-        Layer bg; bg.name = "PDF"; bg.locked = true;
-        auto im = std::make_unique<ImageItem>();
-        im->image = img;
-        im->rect = QRectF(QPointF(0, 0), ptSize);
-        bg.items.push_back(std::move(im));
-        page.layers.insert(page.layers.begin(), std::move(bg));
-        Layer ink; ink.name = "Ink";
-        page.layers.push_back(std::move(ink));
-        page.activeLayer = int(page.layers.size()) - 1;
-    }
-    doc.setCurrentIndex(0);
-    doc.markContentChanged();
     return true;
 }
 
-} // namespace ib::pdf
+bool exportSvg(const Page &pg, const QString &path, QString *error)
+{
+    QRectF b = pg.contentBounds();
+    if (b.isNull())
+        b = QRectF(0, 0, 1280, 720);
+    const double margin = 40.0;
+    b.adjust(-margin, -margin, margin, margin);
+
+    QSvgGenerator gen;
+    gen.setFileName(path);
+    gen.setSize(QSize(static_cast<int>(b.width()), static_cast<int>(b.height())));
+    gen.setViewBox(QRectF(0, 0, b.width(), b.height()));
+    gen.setTitle(QStringLiteral("InkBoard Page"));
+    gen.setDescription(QStringLiteral("Exported by InkBoard"));
+
+    {
+        QPainter p(&gen);
+        if (!p.isActive()) {
+            if (error) *error = QStringLiteral("Failed to create SVG file.");
+            return false;
+        }
+        renderPage(p, pg, b, QRectF(0, 0, b.width(), b.height()), true);
+    }
+    return true;
+}
+
+bool exportPdf(const Document &doc, const QString &path, QString *error)
+{
+    QPdfWriter writer(path);
+    writer.setResolution(150);
+    writer.setPageSize(QPageSize(QPageSize::A4));
+
+    QPainter p(&writer);
+    if (!p.isActive()) {
+        if (error) *error = QStringLiteral("Failed to create PDF file.");
+        return false;
+    }
+
+    bool first = true;
+    for (int i = 0; i < doc.pageCount(); ++i) {
+        if (!first)
+            writer.newPage();
+        first = false;
+
+        const Page &pg = doc.page(i);
+        QRectF b = pg.contentBounds();
+        if (b.isNull())
+            b = QRectF(0, 0, 1280, 720);
+        const double margin = 40.0;
+        b.adjust(-margin, -margin, margin, margin);
+
+        const QRectF dst(0, 0, writer.width(), writer.height());
+        const double s = qMin(dst.width() / b.width(), dst.height() / b.height());
+        QRectF fitted(0, 0, b.width() * s, b.height() * s);
+        fitted.moveCenter(dst.center());
+
+        renderPage(p, pg, b, fitted, true);
+    }
+    return true;
+}
+
+} // namespace io
+} // namespace ib
 EOF
 
-# ---- io/AutosaveManager.h / .cpp ------------------------------------------
-cat > src/io/AutosaveManager.h <<'EOF'
+log "PART 3 complete: serializer, undo commands, exporter, and settings written."
+# ---------------------------------------------------------------------------
+#  END OF PART 3  —  append PART 4 (canvas widget + tool settings) below
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+#  PART 4 of 6 : tool settings + the interactive pressure-aware Canvas widget
+#  Append below PART 3. Creates new files only.
+# ---------------------------------------------------------------------------
+log "PART 4: writing tool settings and the interactive canvas widget"
+
+# ---------------------------------------------------------------------------
+#  src/canvas/Tools.h  — per-tool settings shared with the UI
+# ---------------------------------------------------------------------------
+cat > src/canvas/Tools.h <<'EOF'
 #pragma once
-#include <QObject>
-#include <QString>
-#include <QTimer>
-class QWidget;
+
+#include <QColor>
+#include <QFont>
+#include <QList>
+
+#include "model/Types.h"
+
 namespace ib {
-class Document;
-// Periodic autosave to an app-data recovery file + crash-recovery prompt.
-class AutosaveManager : public QObject {
+
+enum class EraserMode { Stroke, Area };
+
+struct ToolSettings {
+    ToolId tool = ToolId::Pen;
+
+    // Pen
+    QColor penColor    = QColor(24, 24, 24);
+    double penWidth    = 3.0;
+    bool   penPressure = true;
+
+    // Highlighter
+    QColor hlColor   = QColor(255, 214, 10);
+    double hlWidth   = 18.0;
+    double hlOpacity = 0.40;
+
+    // Eraser
+    EraserMode eraserMode   = EraserMode::Stroke;
+    double     eraserRadius = 12.0;
+
+    // Shape
+    ShapeKind shapeKind   = ShapeKind::Rectangle;
+    QColor    shapeColor  = QColor(24, 24, 24);
+    double    shapeWidth  = 3.0;
+    bool      shapeFilled = false;
+    QColor    shapeFill   = QColor(120, 170, 255, 90);
+
+    // Text
+    QColor textColor = QColor(24, 24, 24);
+    QFont  textFont  = QFont(QStringLiteral("Sans Serif"), 18);
+
+    QList<QColor> palette;
+
+    ToolSettings()
+    {
+        palette = {
+            QColor(24, 24, 24),  QColor(230, 30, 30),  QColor(30, 110, 230),
+            QColor(30, 160, 60), QColor(245, 170, 20), QColor(150, 40, 200),
+            QColor(255, 255, 255)
+        };
+    }
+};
+
+} // namespace ib
+EOF
+
+# ---------------------------------------------------------------------------
+#  src/canvas/Canvas.h
+# ---------------------------------------------------------------------------
+cat > src/canvas/Canvas.h <<'EOF'
+#pragma once
+
+#include <QWidget>
+#include <QPointF>
+#include <memory>
+#include <vector>
+
+#include "model/Document.h"
+#include "model/StrokeItem.h"
+#include "model/ShapeItem.h"
+#include "canvas/Tools.h"
+
+class QPaintEvent;
+class QMouseEvent;
+class QTabletEvent;
+class QWheelEvent;
+class QKeyEvent;
+
+namespace ib {
+
+class Canvas : public QWidget {
     Q_OBJECT
 public:
-    explicit AutosaveManager(QObject* parent = nullptr);
-    void setDocument(Document* doc) { m_doc = doc; }
-    void start(int intervalMs = 15000);
-    void stop() { m_timer.stop(); }
-    void clearRecovery();
-    bool maybeOfferRecovery(QWidget* parent);   // returns true if restored
-    static QString recoveryPath();
-private slots:
-    void tick();
+    explicit Canvas(QWidget *parent = nullptr);
+
+    void setDocument(Document *doc);
+    Document *document() const { return m_doc; }
+
+    ToolSettings &settings() { return m_settings; }
+    const ToolSettings &settings() const { return m_settings; }
+
+    void setTool(ToolId t);
+    ToolId tool() const { return m_settings.tool; }
+
+    bool hasSelection() const { return !m_selection.empty(); }
+    double zoomPercent() const { return m_scale * 100.0; }
+
+public slots:
+    void zoomIn();
+    void zoomOut();
+    void resetView();
+    void zoomToFit();
+    void deleteSelection();
+    void selectAll();
+    void clearSelection();
+    void refresh() { update(); }
+
+signals:
+    void viewChanged();
+    void toolChanged(ib::ToolId tool);
+    void cursorMoved(QPointF scenePos);
+
+protected:
+    void paintEvent(QPaintEvent *) override;
+    void mousePressEvent(QMouseEvent *e) override;
+    void mouseMoveEvent(QMouseEvent *e) override;
+    void mouseReleaseEvent(QMouseEvent *e) override;
+    void tabletEvent(QTabletEvent *e) override;
+    void wheelEvent(QWheelEvent *e) override;
+    void keyPressEvent(QKeyEvent *e) override;
+    void keyReleaseEvent(QKeyEvent *e) override;
+
 private:
-    Document* m_doc = nullptr;
-    QTimer m_timer;
+    enum class Action { Press, Move, Release };
+
+    struct EraseStash {
+        std::size_t index;
+        ItemPtr     item;
+    };
+
+    // Coordinate transforms.
+    QPointF widgetToScene(const QPointF &p) const { return (p - m_translate) / m_scale; }
+    QPointF sceneToWidget(const QPointF &s) const { return s * m_scale + m_translate; }
+
+    void handlePointer(Action a, const QPointF &widgetPos, double pressure,
+                       Qt::KeyboardModifiers mods, bool eraserTip);
+    void handleSelect(Action a, const QPointF &sp, Qt::KeyboardModifiers mods);
+
+    void commitAdd(ItemPtr item, const QString &text);
+    void eraseAt(const QPointF &sp);
+    void finishErase();
+    void addTextAt(const QPointF &sp);
+    void cancelActive();
+    void zoomAround(const QPointF &widgetPos, double factor);
+    void updateCursor();
+
+    void drawBackground(QPainter &p, const Page &pg, const QRectF &area);
+    void drawSelection(QPainter &p);
+
+    bool hitTest(Item *it, const QPointF &sp, double radius) const;
+    Item *topItemAt(const QPointF &sp);
+    void selectInRect(const QRectF &r, bool add);
+    void setSelectionSingle(Item *it);
+    void addToSelection(Item *it);
+    void removeFromSelection(Item *it);
+
+    Document    *m_doc = nullptr;
+    ToolSettings m_settings;
+
+    double  m_scale = 1.0;
+    QPointF m_translate;
+
+    // panning
+    bool   m_panning = false;
+    bool   m_spaceDown = false;
+    QPoint m_lastPanPos;
+
+    // active building
+    std::unique_ptr<StrokeItem> m_activeStroke;
+    std::unique_ptr<ShapeItem>  m_activeShape;
+    bool m_drawing = false;
+
+    // eraser
+    bool m_erasing = false;
+    std::vector<EraseStash> m_eraseStash;
+
+    // selection / move / rubber-band
+    std::vector<Item *> m_selection;
+    bool    m_movingSelection = false;
+    QPointF m_moveStartScene;
+    QPointF m_moveAccum;
+    bool    m_rubber = false;
+    QPointF m_rubberStartScene;
+    QRectF  m_rubberRect;
+
+    QPointF m_cursorWidget;
 };
+
 } // namespace ib
 EOF
 
-cat > src/io/AutosaveManager.cpp <<'EOF'
-#include "io/AutosaveManager.h"
-#include "io/BoardSerializer.h"
-#include "model/Document.h"
-#include <QDir>
-#include <QFile>
-#include <QFileInfo>
-#include <QMessageBox>
-#include <QStandardPaths>
+# ---------------------------------------------------------------------------
+#  src/canvas/Canvas.cpp
+# ---------------------------------------------------------------------------
+cat > src/canvas/Canvas.cpp <<'EOF'
+#include "canvas/Canvas.h"
+
+#include "core/Commands.h"
+
+#include <QPainter>
+#include <QPen>
+#include <QMouseEvent>
+#include <QTabletEvent>
+#include <QWheelEvent>
+#include <QKeyEvent>
+#include <QPointingDevice>
+#include <QInputDialog>
+#include <QUndoStack>
+#include <QLineF>
+#include <algorithm>
+#include <cmath>
 
 namespace ib {
 
-AutosaveManager::AutosaveManager(QObject* parent) : QObject(parent) {
-    connect(&m_timer, &QTimer::timeout, this, &AutosaveManager::tick);
+static const double kPi = 3.14159265358979323846;
+
+static double distToSegment(const QPointF &p, const QPointF &a, const QPointF &b)
+{
+    const QPointF ab = b - a;
+    const double len2 = ab.x() * ab.x() + ab.y() * ab.y();
+    if (len2 <= 1e-9)
+        return std::hypot(p.x() - a.x(), p.y() - a.y());
+    double t = ((p.x() - a.x()) * ab.x() + (p.y() - a.y()) * ab.y()) / len2;
+    t = std::max(0.0, std::min(1.0, t));
+    const QPointF proj(a.x() + t * ab.x(), a.y() + t * ab.y());
+    return std::hypot(p.x() - proj.x(), p.y() - proj.y());
 }
 
-QString AutosaveManager::recoveryPath() {
-    const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    QDir().mkpath(dir);
-    return dir + "/recovery.iboard";
+static QPointF constrainShape(const QPointF &a, const QPointF &b, ShapeKind kind)
+{
+    const QPointF d = b - a;
+    if (kind == ShapeKind::Line) {
+        double ang = std::atan2(d.y(), d.x());
+        const double step = kPi / 4.0;
+        ang = std::round(ang / step) * step;
+        const double len = std::hypot(d.x(), d.y());
+        return a + QPointF(std::cos(ang) * len, std::sin(ang) * len);
+    }
+    const double s = std::max(std::abs(d.x()), std::abs(d.y()));
+    return a + QPointF(d.x() < 0 ? -s : s, d.y() < 0 ? -s : s);
 }
 
-void AutosaveManager::start(int intervalMs) { m_timer.start(intervalMs); }
-
-void AutosaveManager::tick() {
-    if (!m_doc || !m_doc->isModified()) return;
-    QFile f(recoveryPath());
-    if (f.open(QIODevice::WriteOnly)) { f.write(board::toBytes(*m_doc)); f.close(); }
+Canvas::Canvas(QWidget *parent)
+    : QWidget(parent)
+{
+    setFocusPolicy(Qt::StrongFocus);
+    setMouseTracking(true);
+    setAttribute(Qt::WA_TabletTracking, true);
+    setAutoFillBackground(false);
+    m_translate = QPointF(40, 40);
+    updateCursor();
 }
 
-void AutosaveManager::clearRecovery() { QFile::remove(recoveryPath()); }
+void Canvas::setDocument(Document *doc)
+{
+    if (m_doc == doc)
+        return;
+    if (m_doc) {
+        m_doc->disconnect(this);
+        if (m_doc->undoStack())
+            m_doc->undoStack()->disconnect(this);
+    }
+    m_doc = doc;
+    cancelActive();
+    m_selection.clear();
 
-bool AutosaveManager::maybeOfferRecovery(QWidget* parent) {
-    const QString rp = recoveryPath();
-    if (!QFileInfo::exists(rp) || !m_doc) return false;
-    const auto btn = QMessageBox::question(
-        parent, QObject::tr("Recover work"),
-        QObject::tr("An unsaved session was found. Restore it?"),
-        QMessageBox::Yes | QMessageBox::No);
-    if (btn != QMessageBox::Yes) { clearRecovery(); return false; }
-    QFile f(rp);
-    if (!f.open(QIODevice::ReadOnly)) return false;
-    QString err;
-    const bool ok = board::fromBytes(*m_doc, f.readAll(), &err);
-    if (!ok) QMessageBox::warning(parent, QObject::tr("Recover"), err);
-    return ok;
+    if (m_doc) {
+        connect(m_doc, &Document::currentPageChanged, this, [this](int) {
+            cancelActive(); m_selection.clear(); update();
+        });
+        connect(m_doc, &Document::pagesChanged, this, [this]() {
+            cancelActive(); m_selection.clear(); update();
+        });
+        connect(m_doc, &Document::contentChanged, this, [this]() { update(); });
+        if (m_doc->undoStack()) {
+            connect(m_doc->undoStack(), &QUndoStack::indexChanged, this, [this](int) {
+                m_selection.clear(); cancelActive(); update();
+            });
+        }
+    }
+    update();
+}
+
+void Canvas::setTool(ToolId t)
+{
+    cancelActive();
+    m_settings.tool = t;
+    updateCursor();
+    emit toolChanged(t);
+    update();
+}
+
+// ---- view ------------------------------------------------------------------
+void Canvas::zoomAround(const QPointF &widgetPos, double factor)
+{
+    const QPointF before = widgetToScene(widgetPos);
+    m_scale = qBound(0.05, m_scale * factor, 40.0);
+    m_translate = widgetPos - before * m_scale;
+    update();
+    emit viewChanged();
+}
+
+void Canvas::zoomIn()  { zoomAround(QPointF(width() / 2.0, height() / 2.0), 1.2); }
+void Canvas::zoomOut() { zoomAround(QPointF(width() / 2.0, height() / 2.0), 1.0 / 1.2); }
+
+void Canvas::resetView()
+{
+    m_scale = 1.0;
+    m_translate = QPointF(40, 40);
+    update();
+    emit viewChanged();
+}
+
+void Canvas::zoomToFit()
+{
+    if (!m_doc) { update(); return; }
+    QRectF b = m_doc->current().contentBounds();
+    if (b.isNull()) { resetView(); return; }
+    b.adjust(-40, -40, 40, 40);
+    const double sx = width()  / b.width();
+    const double sy = height() / b.height();
+    m_scale = qBound(0.05, qMin(sx, sy), 40.0);
+    m_translate = QPointF(width() / 2.0, height() / 2.0) - b.center() * m_scale;
+    update();
+    emit viewChanged();
+}
+
+// ---- painting --------------------------------------------------------------
+void Canvas::drawBackground(QPainter &p, const Page &pg, const QRectF &area)
+{
+    if (pg.background == BackgroundKind::Blank)
+        return;
+    const double s = qMax(4.0, pg.gridSpacing);
+    QPen pen(pg.gridColor);
+    pen.setCosmetic(true);
+    pen.setWidth(1);
+    p.setPen(pen);
+
+    const double startX = std::floor(area.left() / s) * s;
+    const double startY = std::floor(area.top() / s) * s;
+
+    if (pg.background == BackgroundKind::Grid) {
+        for (double x = startX; x <= area.right(); x += s)
+            p.drawLine(QPointF(x, area.top()), QPointF(x, area.bottom()));
+        for (double y = startY; y <= area.bottom(); y += s)
+            p.drawLine(QPointF(area.left(), y), QPointF(area.right(), y));
+    } else if (pg.background == BackgroundKind::Lines) {
+        for (double y = startY; y <= area.bottom(); y += s)
+            p.drawLine(QPointF(area.left(), y), QPointF(area.right(), y));
+    } else {
+        p.setPen(Qt::NoPen);
+        p.setBrush(pg.gridColor);
+        for (double x = startX; x <= area.right(); x += s)
+            for (double y = startY; y <= area.bottom(); y += s)
+                p.drawEllipse(QPointF(x, y), 1.3, 1.3);
+    }
+}
+
+void Canvas::drawSelection(QPainter &p)
+{
+    if (m_selection.empty())
+        return;
+    QPen pen(QColor(60, 120, 220));
+    pen.setCosmetic(true);
+    pen.setStyle(Qt::DashLine);
+    pen.setWidth(1);
+    p.setPen(pen);
+    p.setBrush(Qt::NoBrush);
+    for (Item *it : m_selection)
+        p.drawRect(it->boundingRect());
+}
+
+void Canvas::paintEvent(QPaintEvent *)
+{
+    QPainter p(this);
+    p.fillRect(rect(), QColor(90, 93, 99));
+    if (!m_doc)
+        return;
+
+    p.save();
+    p.translate(m_translate);
+    p.scale(m_scale, m_scale);
+
+    const QRectF sceneRect =
+        QRectF(widgetToScene(QPointF(0, 0)),
+               widgetToScene(QPointF(width(), height()))).normalized();
+
+    Page &pg = m_doc->current();
+    p.fillRect(sceneRect, pg.bgColor);
+    drawBackground(p, pg, sceneRect);
+
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setRenderHint(QPainter::TextAntialiasing, true);
+
+    for (const auto &ly : pg.layers) {
+        if (!ly.visible)
+            continue;
+        p.save();
+        if (ly.opacity < 1.0)
+            p.setOpacity(ly.opacity);
+        for (const auto &it : ly.items)
+            it->paint(p);
+        p.restore();
+    }
+
+    if (m_activeStroke) m_activeStroke->paint(p);
+    if (m_activeShape)  m_activeShape->paint(p);
+
+    drawSelection(p);
+
+    if (m_rubber) {
+        QPen pen(QColor(60, 120, 220));
+        pen.setCosmetic(true);
+        pen.setStyle(Qt::DashLine);
+        p.setPen(pen);
+        p.setBrush(QColor(60, 120, 220, 40));
+        p.drawRect(m_rubberRect);
+    }
+
+    p.restore();
+
+    if (m_settings.tool == ToolId::Eraser && underMouse()) {
+        const double r = m_settings.eraserRadius * m_scale;
+        QPen pen(QColor(70, 70, 70));
+        pen.setStyle(Qt::DashLine);
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        p.drawEllipse(m_cursorWidget, r, r);
+    }
+}
+
+// ---- input -----------------------------------------------------------------
+void Canvas::mousePressEvent(QMouseEvent *e)
+{
+    m_cursorWidget = e->position();
+    if (e->button() == Qt::MiddleButton ||
+        (m_spaceDown && e->button() == Qt::LeftButton)) {
+        m_panning = true;
+        m_lastPanPos = e->position().toPoint();
+        setCursor(Qt::ClosedHandCursor);
+        return;
+    }
+    if (e->button() == Qt::LeftButton)
+        handlePointer(Action::Press, e->position(), 1.0, e->modifiers(), false);
+}
+
+void Canvas::mouseMoveEvent(QMouseEvent *e)
+{
+    m_cursorWidget = e->position();
+    if (m_panning) {
+        const QPoint d = e->position().toPoint() - m_lastPanPos;
+        m_lastPanPos = e->position().toPoint();
+        m_translate += QPointF(d);
+        update();
+        emit viewChanged();
+        return;
+    }
+    handlePointer(Action::Move, e->position(), 1.0, e->modifiers(), false);
+    if (m_settings.tool == ToolId::Eraser)
+        update();
+    emit cursorMoved(widgetToScene(e->position()));
+}
+
+void Canvas::mouseReleaseEvent(QMouseEvent *e)
+{
+    m_cursorWidget = e->position();
+    if (m_panning &&
+        (e->button() == Qt::MiddleButton || e->button() == Qt::LeftButton)) {
+        m_panning = false;
+        updateCursor();
+        return;
+    }
+    if (e->button() == Qt::LeftButton)
+        handlePointer(Action::Release, e->position(), 1.0, e->modifiers(), false);
+}
+
+void Canvas::tabletEvent(QTabletEvent *e)
+{
+    const bool eraserTip =
+        e->pointerType() == QPointingDevice::PointerType::Eraser;
+    double pr = e->pressure();
+    if (pr <= 0.0)
+        pr = 1.0;
+    m_cursorWidget = e->position();
+
+    switch (e->type()) {
+    case QEvent::TabletPress:
+        handlePointer(Action::Press, e->position(), pr, e->modifiers(), eraserTip);
+        break;
+    case QEvent::TabletMove:
+        handlePointer(Action::Move, e->position(), pr, e->modifiers(), eraserTip);
+        emit cursorMoved(widgetToScene(e->position()));
+        if (m_settings.tool == ToolId::Eraser)
+            update();
+        break;
+    case QEvent::TabletRelease:
+        handlePointer(Action::Release, e->position(), pr, e->modifiers(), eraserTip);
+        break;
+    default:
+        break;
+    }
+    e->accept();
+}
+
+void Canvas::wheelEvent(QWheelEvent *e)
+{
+    const double factor = std::pow(1.0015, e->angleDelta().y());
+    zoomAround(e->position(), factor);
+    e->accept();
+}
+
+void Canvas::keyPressEvent(QKeyEvent *e)
+{
+    if (e->key() == Qt::Key_Space) {
+        m_spaceDown = true;
+        setCursor(Qt::OpenHandCursor);
+        e->accept();
+        return;
+    }
+    if (e->key() == Qt::Key_Delete || e->key() == Qt::Key_Backspace) {
+        deleteSelection();
+        e->accept();
+        return;
+    }
+    if (e->key() == Qt::Key_Escape) {
+        cancelActive();
+        clearSelection();
+        update();
+        e->accept();
+        return;
+    }
+    QWidget::keyPressEvent(e);
+}
+
+void Canvas::keyReleaseEvent(QKeyEvent *e)
+{
+    if (e->key() == Qt::Key_Space) {
+        m_spaceDown = false;
+        updateCursor();
+        e->accept();
+        return;
+    }
+    QWidget::keyReleaseEvent(e);
+}
+
+// ---- pointer dispatch ------------------------------------------------------
+void Canvas::handlePointer(Action a, const QPointF &widgetPos, double pressure,
+                           Qt::KeyboardModifiers mods, bool eraserTip)
+{
+    if (!m_doc)
+        return;
+    const QPointF sp = widgetToScene(widgetPos);
+    m_cursorWidget = widgetPos;
+
+    const ToolId t = eraserTip ? ToolId::Eraser : m_settings.tool;
+    Layer &ly = m_doc->current().active();
+    if (ly.locked)
+        return;
+
+    switch (t) {
+    case ToolId::Pen:
+    case ToolId::Highlighter: {
+        const bool hl = (t == ToolId::Highlighter);
+        if (a == Action::Press) {
+            m_drawing = true;
+            m_activeStroke = std::make_unique<StrokeItem>();
+            m_activeStroke->highlighter   = hl;
+            m_activeStroke->color         = hl ? m_settings.hlColor : m_settings.penColor;
+            m_activeStroke->baseWidth     = hl ? m_settings.hlWidth : m_settings.penWidth;
+            m_activeStroke->opacity       = hl ? m_settings.hlOpacity : 1.0;
+            m_activeStroke->pressureWidth = hl ? false : m_settings.penPressure;
+            m_activeStroke->addPoint(StrokePoint(sp.x(), sp.y(), pressure));
+            update();
+        } else if (a == Action::Move && m_drawing && m_activeStroke) {
+            m_activeStroke->addPoint(StrokePoint(sp.x(), sp.y(), pressure));
+            update();
+        } else if (a == Action::Release && m_drawing) {
+            if (m_activeStroke && !m_activeStroke->isEmpty())
+                commitAdd(std::move(m_activeStroke),
+                          hl ? QStringLiteral("Highlight") : QStringLiteral("Draw"));
+            m_activeStroke.reset();
+            m_drawing = false;
+            update();
+        }
+        break;
+    }
+    case ToolId::Eraser: {
+        if (a == Action::Press) { m_erasing = true; m_eraseStash.clear(); eraseAt(sp); update(); }
+        else if (a == Action::Move && m_erasing) { eraseAt(sp); update(); }
+        else if (a == Action::Release && m_erasing) { finishErase(); m_erasing = false; update(); }
+        break;
+    }
+    case ToolId::Line:
+    case ToolId::Rectangle:
+    case ToolId::Ellipse: {
+        if (a == Action::Press) {
+            m_activeShape = std::make_unique<ShapeItem>();
+            m_activeShape->kind = (t == ToolId::Line) ? ShapeKind::Line
+                                : (t == ToolId::Rectangle) ? ShapeKind::Rectangle
+                                : ShapeKind::Ellipse;
+            m_activeShape->color  = m_settings.shapeColor;
+            m_activeShape->width  = m_settings.shapeWidth;
+            m_activeShape->filled = m_settings.shapeFilled;
+            m_activeShape->fill   = m_settings.shapeFill;
+            m_activeShape->p1 = sp;
+            m_activeShape->p2 = sp;
+            m_drawing = true;
+            update();
+        } else if (a == Action::Move && m_drawing && m_activeShape) {
+            m_activeShape->p2 = (mods & Qt::ShiftModifier)
+                ? constrainShape(m_activeShape->p1, sp, m_activeShape->kind)
+                : sp;
+            update();
+        } else if (a == Action::Release && m_drawing) {
+            if (m_activeShape) {
+                const QLineF diag(m_activeShape->p1, m_activeShape->p2);
+                if (diag.length() >= 2.0)
+                    commitAdd(std::move(m_activeShape), QStringLiteral("Shape"));
+            }
+            m_activeShape.reset();
+            m_drawing = false;
+            update();
+        }
+        break;
+    }
+    case ToolId::Text: {
+        if (a == Action::Press)
+            addTextAt(sp);
+        break;
+    }
+    case ToolId::Select: {
+        handleSelect(a, sp, mods);
+        break;
+    }
+    }
+}
+
+// ---- selection -------------------------------------------------------------
+void Canvas::handleSelect(Action a, const QPointF &sp, Qt::KeyboardModifiers mods)
+{
+    if (a == Action::Press) {
+        Item *hit = topItemAt(sp);
+        if (hit) {
+            const bool already =
+                std::find(m_selection.begin(), m_selection.end(), hit) != m_selection.end();
+            if (mods & Qt::ShiftModifier) {
+                if (already) removeFromSelection(hit);
+                else addToSelection(hit);
+            } else if (!already) {
+                setSelectionSingle(hit);
+            }
+            m_movingSelection = true;
+            m_moveStartScene = sp;
+            m_moveAccum = QPointF(0, 0);
+        } else {
+            if (!(mods & Qt::ShiftModifier))
+                clearSelection();
+            m_rubber = true;
+            m_rubberStartScene = sp;
+            m_rubberRect = QRectF(sp, sp);
+        }
+        update();
+    } else if (a == Action::Move) {
+        if (m_movingSelection && !m_selection.empty()) {
+            const QPointF d = sp - m_moveStartScene;
+            const QPointF step = d - m_moveAccum;
+            for (Item *it : m_selection)
+                it->translate(step);
+            m_moveAccum = d;
+            update();
+        } else if (m_rubber) {
+            m_rubberRect = QRectF(m_rubberStartScene, sp).normalized();
+            update();
+        }
+    } else { // Release
+        if (m_movingSelection) {
+            m_movingSelection = false;
+            if (!m_selection.empty() &&
+                (qAbs(m_moveAccum.x()) > 0.01 || qAbs(m_moveAccum.y()) > 0.01)) {
+                for (Item *it : m_selection)
+                    it->translate(-m_moveAccum);
+                std::vector<Item *> targets(m_selection.begin(), m_selection.end());
+                m_doc->undoStack()->push(new TranslateItemsCommand(
+                    m_doc, m_doc->currentIndex(), m_doc->current().activeLayer,
+                    targets, m_moveAccum, QStringLiteral("Move")));
+            }
+            m_moveAccum = QPointF(0, 0);
+        } else if (m_rubber) {
+            m_rubber = false;
+            selectInRect(m_rubberRect, (mods & Qt::ShiftModifier));
+        }
+        update();
+    }
+}
+
+void Canvas::setSelectionSingle(Item *it)
+{
+    m_selection.clear();
+    if (it) m_selection.push_back(it);
+}
+
+void Canvas::addToSelection(Item *it)
+{
+    if (it && std::find(m_selection.begin(), m_selection.end(), it) == m_selection.end())
+        m_selection.push_back(it);
+}
+
+void Canvas::removeFromSelection(Item *it)
+{
+    m_selection.erase(std::remove(m_selection.begin(), m_selection.end(), it),
+                      m_selection.end());
+}
+
+void Canvas::clearSelection()
+{
+    if (m_selection.empty())
+        return;
+    m_selection.clear();
+    update();
+}
+
+void Canvas::selectAll()
+{
+    if (!m_doc)
+        return;
+    m_selection.clear();
+    for (auto &it : m_doc->current().active().items)
+        m_selection.push_back(it.get());
+    update();
+}
+
+void Canvas::selectInRect(const QRectF &r, bool add)
+{
+    if (!m_doc)
+        return;
+    if (!add)
+        m_selection.clear();
+    for (auto &it : m_doc->current().active().items) {
+        if (r.intersects(it->boundingRect()) &&
+            std::find(m_selection.begin(), m_selection.end(), it.get()) == m_selection.end())
+            m_selection.push_back(it.get());
+    }
+}
+
+Item *Canvas::topItemAt(const QPointF &sp)
+{
+    if (!m_doc)
+        return nullptr;
+    Layer &ly = m_doc->current().active();
+    const double r = 6.0 / qMax(0.0001, m_scale);
+    for (int i = static_cast<int>(ly.items.size()) - 1; i >= 0; --i) {
+        Item *it = ly.items[static_cast<std::size_t>(i)].get();
+        if (hitTest(it, sp, r))
+            return it;
+    }
+    return nullptr;
+}
+
+bool Canvas::hitTest(Item *it, const QPointF &sp, double radius) const
+{
+    const QRectF bb = it->boundingRect().adjusted(-radius, -radius, radius, radius);
+    if (!bb.contains(sp))
+        return false;
+
+    if (it->type() == ItemType::Stroke) {
+        const StrokeItem *s = static_cast<const StrokeItem *>(it);
+        const double tol = radius + s->baseWidth * 0.5;
+        if (s->points.size() == 1)
+            return QLineF(sp, s->points.first().pos()).length() <= tol;
+        for (int i = 1; i < s->points.size(); ++i)
+            if (distToSegment(sp, s->points[i - 1].pos(), s->points[i].pos()) <= tol)
+                return true;
+        return false;
+    }
+    return true;
+}
+
+// ---- helpers ---------------------------------------------------------------
+void Canvas::commitAdd(ItemPtr item, const QString &text)
+{
+    if (!m_doc || !item)
+        return;
+    m_doc->undoStack()->push(new AddItemCommand(
+        m_doc, m_doc->currentIndex(), m_doc->current().activeLayer,
+        std::move(item), text));
+}
+
+void Canvas::eraseAt(const QPointF &sp)
+{
+    if (!m_doc)
+        return;
+    Layer &ly = m_doc->current().active();
+    const double r = m_settings.eraserRadius;
+    for (std::size_t i = 0; i < ly.items.size();) {
+        if (hitTest(ly.items[i].get(), sp, r)) {
+            m_eraseStash.push_back({i, std::move(ly.items[i])});
+            ly.items.erase(ly.items.begin() + static_cast<std::ptrdiff_t>(i));
+        } else {
+            ++i;
+        }
+    }
+}
+
+void Canvas::finishErase()
+{
+    if (!m_doc || m_eraseStash.empty())
+        return;
+    Layer &ly = m_doc->current().active();
+    std::sort(m_eraseStash.begin(), m_eraseStash.end(),
+              [](const EraseStash &a, const EraseStash &b) { return a.index < b.index; });
+
+    std::vector<Item *> targets;
+    for (auto &s : m_eraseStash) {
+        Item *raw = s.item.get();
+        targets.push_back(raw);
+        const std::size_t idx = std::min(s.index, ly.items.size());
+        ly.items.insert(ly.items.begin() + static_cast<std::ptrdiff_t>(idx),
+                        std::move(s.item));
+    }
+    m_eraseStash.clear();
+
+    m_doc->undoStack()->push(new RemoveItemsCommand(
+        m_doc, m_doc->currentIndex(), m_doc->current().activeLayer,
+        std::move(targets), QStringLiteral("Erase")));
+}
+
+void Canvas::addTextAt(const QPointF &sp)
+{
+    bool ok = false;
+    const QString text = QInputDialog::getMultiLineText(
+        this, tr("Add Text"), tr("Text:"), QString(), &ok);
+    if (!ok || text.trimmed().isEmpty())
+        return;
+    auto t = std::make_unique<TextItem>();
+    t->pos   = sp;
+    t->text  = text;
+    t->color = m_settings.textColor;
+    t->font  = m_settings.textFont;
+    commitAdd(std::move(t), QStringLiteral("Text"));
+}
+
+void Canvas::deleteSelection()
+{
+    if (!m_doc || m_selection.empty())
+        return;
+    std::vector<Item *> targets(m_selection.begin(), m_selection.end());
+    m_selection.clear();
+    m_doc->undoStack()->push(new RemoveItemsCommand(
+        m_doc, m_doc->currentIndex(), m_doc->current().activeLayer,
+        std::move(targets), QStringLiteral("Delete")));
+    update();
+}
+
+void Canvas::cancelActive()
+{
+    m_activeStroke.reset();
+    m_activeShape.reset();
+    m_drawing = false;
+    if (m_erasing && m_doc) {
+        Layer &ly = m_doc->current().active();
+        for (auto &s : m_eraseStash)
+            ly.items.push_back(std::move(s.item));
+    }
+    m_eraseStash.clear();
+    m_erasing = false;
+    m_movingSelection = false;
+    m_rubber = false;
+}
+
+void Canvas::updateCursor()
+{
+    switch (m_settings.tool) {
+    case ToolId::Pen:
+    case ToolId::Highlighter:
+    case ToolId::Line:
+    case ToolId::Rectangle:
+    case ToolId::Ellipse:
+        setCursor(Qt::CrossCursor);
+        break;
+    case ToolId::Eraser:
+        setCursor(Qt::BlankCursor);
+        break;
+    case ToolId::Text:
+        setCursor(Qt::IBeamCursor);
+        break;
+    case ToolId::Select:
+        setCursor(Qt::ArrowCursor);
+        break;
+    }
 }
 
 } // namespace ib
 EOF
 
-# ---- ui/PreferencesDialog.h / .cpp ----------------------------------------
+log "PART 4 complete: tool settings and the interactive canvas widget written."
+# ---------------------------------------------------------------------------
+#  END OF PART 4  —  append PART 5 (MainWindow, toolbars, preferences) below
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+#  PART 5 of 6 : application shell — MainWindow + PreferencesDialog
+#  Append below PART 4. Creates new files only.
+# ---------------------------------------------------------------------------
+log "PART 5: writing MainWindow and PreferencesDialog"
+
+# ---------------------------------------------------------------------------
+#  src/ui/PreferencesDialog.h
+# ---------------------------------------------------------------------------
 cat > src/ui/PreferencesDialog.h <<'EOF'
 #pragma once
+
 #include <QDialog>
+#include <QColor>
+
+#include "canvas/Tools.h"
+
+class QSpinBox;
+class QDoubleSpinBox;
+class QPushButton;
+
 namespace ib {
-class ToolManager;
-class ThemeManager;
-class ShortcutManager;
-class CanvasWidget;
-// Central preferences: theme, pen/pressure, touch, pointer fade, shortcuts.
+
 class PreferencesDialog : public QDialog {
     Q_OBJECT
 public:
-    PreferencesDialog(ToolManager* tools, ThemeManager* theme, ShortcutManager* sc,
-                      CanvasWidget* canvas, QWidget* parent = nullptr);
+    PreferencesDialog(const ToolSettings &s, int autosaveSeconds,
+                      QWidget *parent = nullptr);
+
+    ToolSettings toolSettings() const { return m_settings; }
+    int autosaveSeconds() const;
+
+private slots:
+    void pickPenColor();
+    void applyAndAccept();
+
+private:
+    void refreshColorButton();
+
+    ToolSettings m_settings;
+    QColor       m_penColor;
+
+    QSpinBox       *m_penWidth      = nullptr;
+    QPushButton    *m_penColorBtn   = nullptr;
+    QDoubleSpinBox *m_hlWidth       = nullptr;
+    QDoubleSpinBox *m_hlOpacity     = nullptr;
+    QDoubleSpinBox *m_eraserRadius  = nullptr;
+    QSpinBox       *m_textSize      = nullptr;
+    QSpinBox       *m_autosave      = nullptr;
 };
+
 } // namespace ib
 EOF
 
+# ---------------------------------------------------------------------------
+#  src/ui/PreferencesDialog.cpp
+# ---------------------------------------------------------------------------
 cat > src/ui/PreferencesDialog.cpp <<'EOF'
 #include "ui/PreferencesDialog.h"
-#include "ui/ThemeManager.h"
-#include "ui/ShortcutManager.h"
-#include "tools/ToolManager.h"
-#include "render/CanvasWidget.h"
-#include <QCheckBox>
-#include <QComboBox>
-#include <QDoubleSpinBox>
+
 #include <QFormLayout>
-#include <QKeySequenceEdit>
-#include <QLabel>
-#include <QPushButton>
-#include <QScrollArea>
-#include <QSpinBox>
-#include <QTabWidget>
 #include <QVBoxLayout>
+#include <QDialogButtonBox>
+#include <QSpinBox>
+#include <QDoubleSpinBox>
+#include <QPushButton>
+#include <QColorDialog>
+#include <QLabel>
 
 namespace ib {
 
-PreferencesDialog::PreferencesDialog(ToolManager* tools, ThemeManager* theme,
-                                     ShortcutManager* sc, CanvasWidget* canvas, QWidget* parent)
-    : QDialog(parent) {
+PreferencesDialog::PreferencesDialog(const ToolSettings &s, int autosaveSeconds,
+                                     QWidget *parent)
+    : QDialog(parent)
+    , m_settings(s)
+    , m_penColor(s.penColor)
+{
     setWindowTitle(tr("Preferences"));
-    resize(520, 560);
-    auto* tabs = new QTabWidget(this);
+    setModal(true);
 
-    // --- Appearance ---
-    {
-        auto* w = new QWidget; auto* f = new QFormLayout(w);
-        auto* mode = new QComboBox; mode->addItems({tr("System"), tr("Light"), tr("Dark")});
-        mode->setCurrentIndex(int(theme->mode()));
-        connect(mode, &QComboBox::currentIndexChanged, this, [theme](int i){ theme->setMode(ThemeManager::Mode(i)); });
-        f->addRow(tr("Theme"), mode);
-        auto* accent = new QPushButton(tr("Choose accent..."));
-        connect(accent, &QPushButton::clicked, this, [theme, this]{
-            const QColor c = QColorDialog::getColor(theme->accent(), this, tr("Accent"));
-            if (c.isValid()) theme->setAccent(c);
-        });
-        f->addRow(tr("Accent"), accent);
-        tabs->addTab(w, tr("Appearance"));
+    auto *form = new QFormLayout;
+
+    m_penWidth = new QSpinBox(this);
+    m_penWidth->setRange(1, 64);
+    m_penWidth->setValue(qRound(m_settings.penWidth));
+    m_penWidth->setSuffix(tr(" px"));
+    form->addRow(tr("Pen width:"), m_penWidth);
+
+    m_penColorBtn = new QPushButton(this);
+    connect(m_penColorBtn, &QPushButton::clicked, this, &PreferencesDialog::pickPenColor);
+    refreshColorButton();
+    form->addRow(tr("Pen color:"), m_penColorBtn);
+
+    m_hlWidth = new QDoubleSpinBox(this);
+    m_hlWidth->setRange(1.0, 120.0);
+    m_hlWidth->setValue(m_settings.hlWidth);
+    m_hlWidth->setSuffix(tr(" px"));
+    form->addRow(tr("Highlighter width:"), m_hlWidth);
+
+    m_hlOpacity = new QDoubleSpinBox(this);
+    m_hlOpacity->setRange(0.05, 1.0);
+    m_hlOpacity->setSingleStep(0.05);
+    m_hlOpacity->setValue(m_settings.hlOpacity);
+    form->addRow(tr("Highlighter opacity:"), m_hlOpacity);
+
+    m_eraserRadius = new QDoubleSpinBox(this);
+    m_eraserRadius->setRange(2.0, 200.0);
+    m_eraserRadius->setValue(m_settings.eraserRadius);
+    m_eraserRadius->setSuffix(tr(" px"));
+    form->addRow(tr("Eraser radius:"), m_eraserRadius);
+
+    m_textSize = new QSpinBox(this);
+    m_textSize->setRange(6, 200);
+    m_textSize->setValue(m_settings.textFont.pointSize() > 0
+                             ? m_settings.textFont.pointSize() : 18);
+    m_textSize->setSuffix(tr(" pt"));
+    form->addRow(tr("Text size:"), m_textSize);
+
+    m_autosave = new QSpinBox(this);
+    m_autosave->setRange(0, 3600);
+    m_autosave->setValue(autosaveSeconds);
+    m_autosave->setSuffix(tr(" s (0 = off)"));
+    form->addRow(tr("Autosave interval:"), m_autosave);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+                                         this);
+    connect(buttons, &QDialogButtonBox::accepted, this, &PreferencesDialog::applyAndAccept);
+    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+
+    auto *root = new QVBoxLayout(this);
+    root->addLayout(form);
+    root->addWidget(buttons);
+}
+
+void PreferencesDialog::refreshColorButton()
+{
+    m_penColorBtn->setText(m_penColor.name(QColor::HexRgb));
+    m_penColorBtn->setStyleSheet(
+        QString("background-color:%1; color:%2; padding:4px;")
+            .arg(m_penColor.name(),
+                 m_penColor.lightness() > 128 ? "#000000" : "#ffffff"));
+}
+
+void PreferencesDialog::pickPenColor()
+{
+    const QColor c = QColorDialog::getColor(m_penColor, this, tr("Pen Color"));
+    if (c.isValid()) {
+        m_penColor = c;
+        refreshColorButton();
     }
+}
 
-    // --- Pen / pressure ---
-    {
-        auto* w = new QWidget; auto* f = new QFormLayout(w);
-        auto* gamma = new QDoubleSpinBox; gamma->setRange(0.2, 3.0); gamma->setSingleStep(0.1);
-        gamma->setValue(tools->host() ? canvas->router().pressure.gamma : 1.0);
-        connect(gamma, &QDoubleSpinBox::valueChanged, this, [canvas](double v){ canvas->router().pressure.gamma = v; });
-        f->addRow(tr("Pressure curve (gamma)"), gamma);
-        auto* smooth = new QDoubleSpinBox; smooth->setRange(0.0, 0.95); smooth->setSingleStep(0.05);
-        smooth->setValue(tools->settings().penSmoothing);
-        connect(smooth, &QDoubleSpinBox::valueChanged, this, [tools](double v){ tools->settings().penSmoothing = v; });
-        f->addRow(tr("Stabilizer"), smooth);
-        tabs->addTab(w, tr("Pen"));
-    }
+int PreferencesDialog::autosaveSeconds() const
+{
+    return m_autosave->value();
+}
 
-    // --- Touch ---
-    {
-        auto* w = new QWidget; auto* f = new QFormLayout(w);
-        auto* mode = new QComboBox; mode->addItems({tr("Gestures only"), tr("Draw + gestures"), tr("Ignore touch")});
-        mode->setCurrentIndex(int(canvas->router().touchMode));
-        connect(mode, &QComboBox::currentIndexChanged, this, [canvas](int i){ canvas->router().touchMode = TouchMode(i); });
-        f->addRow(tr("Touch mode"), mode);
-        auto* finger = new QCheckBox(tr("Allow finger drawing"));
-        finger->setChecked(canvas->router().fingerDrawing);
-        connect(finger, &QCheckBox::toggled, this, [canvas](bool b){ canvas->router().fingerDrawing = b; });
-        f->addRow(finger);
-        tabs->addTab(w, tr("Touch"));
-    }
+void PreferencesDialog::applyAndAccept()
+{
+    m_settings.penWidth     = m_penWidth->value();
+    m_settings.penColor     = m_penColor;
+    m_settings.hlWidth      = m_hlWidth->value();
+    m_settings.hlOpacity    = m_hlOpacity->value();
+    m_settings.eraserRadius = m_eraserRadius->value();
 
-    // --- Pointer fade ---
-    {
-        auto* w = new QWidget; auto* f = new QFormLayout(w);
-        auto* delay = new QSpinBox; delay->setRange(0, 3000); delay->setSuffix(" ms"); delay->setValue(250);
-        connect(delay, &QSpinBox::valueChanged, this, [canvas](int v){ canvas->setPointerVanishDelayMs(v); });
-        f->addRow(tr("Vanish delay"), delay);
-        auto* fade = new QSpinBox; fade->setRange(0, 3000); fade->setSuffix(" ms"); fade->setValue(450);
-        connect(fade, &QSpinBox::valueChanged, this, [canvas](int v){ canvas->setPointerFadeMs(v); });
-        f->addRow(tr("Fade duration"), fade);
-        auto* laser = new QSpinBox; laser->setRange(0, 3000); laser->setSuffix(" ms");
-        laser->setValue(tools->settings().laserTrailMs);
-        connect(laser, &QSpinBox::valueChanged, this, [tools](int v){ tools->settings().laserTrailMs = v; });
-        f->addRow(tr("Laser trail length"), laser);
-        tabs->addTab(w, tr("Pointer"));
-    }
+    QFont f = m_settings.textFont;
+    f.setPointSize(m_textSize->value());
+    m_settings.textFont = f;
 
-    // --- Shortcuts ---
-    {
-        auto* area = new QScrollArea; area->setWidgetResizable(true);
-        auto* w = new QWidget; auto* f = new QFormLayout(w);
-        for (const auto& e : sc->entries()) {
-            auto* edit = new QKeySequenceEdit(e.action->shortcut());
-            const QString name = e.name;
-            connect(edit, &QKeySequenceEdit::keySequenceChanged, this,
-                    [sc, name](const QKeySequence& k){ sc->setSequence(name, k); });
-            f->addRow(e.label, edit);
-        }
-        area->setWidget(w);
-        tabs->addTab(area, tr("Shortcuts"));
-    }
-
-    auto* root = new QVBoxLayout(this);
-    root->addWidget(tabs);
-    auto* close = new QPushButton(tr("Close"));
-    connect(close, &QPushButton::clicked, this, &QDialog::accept);
-    root->addWidget(close);
+    accept();
 }
 
 } // namespace ib
 EOF
 
-# ---- app/MainWindow.h ------------------------------------------------------
-cat > src/app/MainWindow.h <<'EOF'
+# ---------------------------------------------------------------------------
+#  src/ui/MainWindow.h
+# ---------------------------------------------------------------------------
+cat > src/ui/MainWindow.h <<'EOF'
 #pragma once
+
 #include <QMainWindow>
-#include <memory>
+#include <map>
+
+#include "model/Document.h"
+
+class QLabel;
+class QSpinBox;
+class QAction;
+class QActionGroup;
+class QTimer;
+class QToolBar;
+class QCloseEvent;
+
 namespace ib {
-class Document;
-class CanvasWidget;
-class ToolManager;
-class ThemeManager;
-class ShortcutManager;
-class AutosaveManager;
-class ColorPalette;
-class ToolBarWidget;
-class TextItem;
+
+class Canvas;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
-    explicit MainWindow(QWidget* parent = nullptr);
-    ~MainWindow() override;
-protected:
-    void closeEvent(QCloseEvent* e) override;
-private:
-    void buildActions();
-    void buildMenus();
-    void buildDocks();
-    void updateTitle();
-    void applyColorToActiveTool(const QColor& c);
-    void applySizeToActiveTool(double s);
+    explicit MainWindow(QWidget *parent = nullptr);
 
-    // file ops
+protected:
+    void closeEvent(QCloseEvent *e) override;
+
+private slots:
     void newDocument();
     void openDocument();
     bool saveDocument();
     bool saveDocumentAs();
-    void importPdf();
-    void exportPdf();
     void exportPng();
     void exportSvg();
-    void insertImage();
-    void editText(TextItem* item);
+    void exportPdf();
+    void addPage();
+    void deletePage();
+    void nextPage();
+    void prevPage();
+    void showPreferences();
+    void about();
+    void updateTitle();
+    void updateZoomLabel();
+    void updatePageLabel();
 
-    // view
-    void togglePresentation();
+private:
+    void buildActions();
+    void buildMenus();
+    void buildToolbars();
+    void buildStatusBar();
+    void addColorSwatches(QToolBar *tb);
 
-    Document* m_doc = nullptr;
-    CanvasWidget* m_canvas = nullptr;
-    std::unique_ptr<ToolManager> m_tools;
-    ThemeManager* m_theme = nullptr;
-    ShortcutManager* m_shortcuts = nullptr;
-    AutosaveManager* m_autosave = nullptr;
-    ColorPalette* m_palette = nullptr;
-    ToolBarWidget* m_toolbar = nullptr;
+    void loadSettings();
+    void saveSettingsToStore();
+    void applyAutosave();
 
-    struct Acts; std::unique_ptr<Acts> a;
-    bool m_presentation = false;
+    void setActiveColor(const QColor &c);
+    void setActiveWidth(double w);
+    void setBackgroundKind(BackgroundKind k);
+    void syncWidthSpin();
+    double currentToolWidth() const;
+
+    bool maybeSave();
+    bool saveTo(const QString &path);
+
+    Document *m_doc    = nullptr;
+    Canvas   *m_canvas = nullptr;
+
+    QLabel   *m_zoomLabel = nullptr;
+    QLabel   *m_posLabel  = nullptr;
+    QLabel   *m_pageLabel = nullptr;
+    QSpinBox *m_widthSpin = nullptr;
+
+    QActionGroup *m_toolGroup = nullptr;
+    QTimer       *m_autosaveTimer = nullptr;
+    int           m_autosaveSeconds = 60;
+
+    std::map<ToolId, QAction *> m_toolActions;
 };
+
 } // namespace ib
 EOF
 
-# ---- app/MainWindow.cpp ----------------------------------------------------
-cat > src/app/MainWindow.cpp <<'EOF'
-#include "app/MainWindow.h"
-#include "model/Document.h"
-#include "model/TextItem.h"
-#include "render/CanvasWidget.h"
-#include "tools/ToolManager.h"
-#include "ui/ThemeManager.h"
-#include "ui/ShortcutManager.h"
-#include "ui/ColorPalette.h"
-#include "ui/ToolBarWidget.h"
-#include "ui/PreferencesDialog.h"
-#include "io/BoardSerializer.h"
-#include "io/Exporters.h"
-#include "io/PdfImporter.h"
-#include "io/AutosaveManager.h"
+# ---------------------------------------------------------------------------
+#  src/ui/MainWindow.cpp
+# ---------------------------------------------------------------------------
+cat > src/ui/MainWindow.cpp <<'EOF'
+#include "ui/MainWindow.h"
 
-#include <QAction>
-#include <QCloseEvent>
-#include <QColorDialog>
-#include <QDockWidget>
-#include <QFileDialog>
-#include <QImage>
-#include <QInputDialog>
+#include "canvas/Canvas.h"
+#include "core/Serializer.h"
+#include "core/Exporter.h"
+#include "core/Settings.h"
+#include "ui/PreferencesDialog.h"
+
 #include <QMenuBar>
-#include <QMessageBox>
+#include <QMenu>
+#include <QToolBar>
+#include <QToolButton>
+#include <QAction>
+#include <QActionGroup>
 #include <QStatusBar>
+#include <QLabel>
+#include <QSpinBox>
+#include <QFileDialog>
+#include <QMessageBox>
+#include <QColorDialog>
+#include <QTimer>
+#include <QCloseEvent>
+#include <QSignalBlocker>
+#include <QKeySequence>
+#include <QFileInfo>
+#include <QPixmap>
+#include <QIcon>
+#include <vector>
 
 namespace ib {
 
-struct MainWindow::Acts {
-    QAction *newDoc, *open, *save, *saveAs, *importPdf, *exportPdf, *exportPng, *exportSvg, *insertImg;
-    QAction *undo, *redo, *copy, *paste, *del, *selectAll;
-    QAction *zoomFit, *resetView, *addPage, *delPage, *nextPage, *prevPage, *present, *prefs;
-};
+static Page makeBlankPage()
+{
+    Page pg;
+    Layer ly;
+    ly.name = QStringLiteral("Layer 1");
+    pg.layers.clear();
+    pg.layers.push_back(std::move(ly));
+    pg.activeLayer = 0;
+    return pg;
+}
 
-MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), a(std::make_unique<Acts>()) {
+MainWindow::MainWindow(QWidget *parent)
+    : QMainWindow(parent)
+{
     m_doc = new Document(this);
-    m_canvas = new CanvasWidget(this);
-    setCentralWidget(m_canvas);
+
+    m_canvas = new Canvas(this);
     m_canvas->setDocument(m_doc);
-
-    m_tools = std::make_unique<ToolManager>(m_canvas);
-    m_canvas->setToolManager(m_tools.get());
-    m_tools->setTextEditRequester([this](TextItem* t){ editText(t); });
-
-    m_theme = new ThemeManager(this);
-    m_shortcuts = new ShortcutManager(this);
-    m_autosave = new AutosaveManager(this);
-    m_autosave->setDocument(m_doc);
+    setCentralWidget(m_canvas);
 
     buildActions();
     buildMenus();
-    buildDocks();
+    buildToolbars();
+    buildStatusBar();
+    loadSettings();
 
-    m_theme->apply();
-    m_shortcuts->loadOverrides();
-    statusBar()->showMessage(tr("Ready"));
+    connect(m_doc, &Document::modifiedChanged, this, &MainWindow::updateTitle);
+    connect(m_doc, &Document::pagesChanged, this, &MainWindow::updatePageLabel);
+    connect(m_doc, &Document::currentPageChanged, this, [this](int) {
+        updatePageLabel();
+        m_canvas->update();
+    });
+
+    connect(m_canvas, &Canvas::viewChanged, this, &MainWindow::updateZoomLabel);
+    connect(m_canvas, &Canvas::cursorMoved, this, [this](QPointF p) {
+        m_posLabel->setText(QString("%1, %2")
+                                .arg(p.x(), 0, 'f', 0)
+                                .arg(p.y(), 0, 'f', 0));
+    });
+    connect(m_canvas, &Canvas::toolChanged, this, [this](ToolId t) {
+        auto it = m_toolActions.find(t);
+        if (it != m_toolActions.end())
+            it->second->setChecked(true);
+        syncWidthSpin();
+    });
+
+    m_autosaveTimer = new QTimer(this);
+    connect(m_autosaveTimer, &QTimer::timeout, this, [this]() {
+        if (m_doc->modified() && !m_doc->filePath().isEmpty())
+            saveTo(m_doc->filePath());
+    });
+
+    newDocument();
+    applyAutosave();
+    syncWidthSpin();
+
+    resize(1280, 860);
     updateTitle();
-    connect(m_doc, &Document::modifiedChanged, this, [this](bool){ updateTitle(); });
-    connect(m_doc, &Document::pagesChanged, this, [this]{ updateTitle(); });
-
-    m_autosave->maybeOfferRecovery(this);
-    m_autosave->start(15000);
-    m_canvas->setCursor(m_tools->currentCursor());
+    updateZoomLabel();
+    updatePageLabel();
 }
 
-MainWindow::~MainWindow() = default;
-
-void MainWindow::buildActions() {
-    a->newDoc   = new QAction(tr("New"), this);
-    a->open     = new QAction(tr("Open..."), this);
-    a->save     = new QAction(tr("Save"), this);
-    a->saveAs   = new QAction(tr("Save As..."), this);
-    a->importPdf= new QAction(tr("Import PDF..."), this);
-    a->exportPdf= new QAction(tr("Export PDF..."), this);
-    a->exportPng= new QAction(tr("Export PNG..."), this);
-    a->exportSvg= new QAction(tr("Export SVG..."), this);
-    a->insertImg= new QAction(tr("Insert Image..."), this);
-    a->undo     = new QAction(tr("Undo"), this);
-    a->redo     = new QAction(tr("Redo"), this);
-    a->copy     = new QAction(tr("Copy"), this);
-    a->paste    = new QAction(tr("Paste"), this);
-    a->del      = new QAction(tr("Delete"), this);
-    a->selectAll= new QAction(tr("Select All"), this);
-    a->zoomFit  = new QAction(tr("Zoom to Fit"), this);
-    a->resetView= new QAction(tr("Reset View"), this);
-    a->addPage  = new QAction(tr("Add Page"), this);
-    a->delPage  = new QAction(tr("Delete Page"), this);
-    a->nextPage = new QAction(tr("Next Page"), this);
-    a->prevPage = new QAction(tr("Previous Page"), this);
-    a->present  = new QAction(tr("Presentation Mode"), this);
-    a->present->setCheckable(true);
-    a->prefs    = new QAction(tr("Preferences..."), this);
-
-    auto S = [this](QAction* act, const QString& name, const QString& label, const char* key){
-        m_shortcuts->add(name, label, act, QKeySequence(QString(key)));
+// ---- construction helpers --------------------------------------------------
+void MainWindow::buildActions()
+{
+    struct ToolDef { ToolId id; const char *name; const char *shortcut; };
+    static const ToolDef defs[] = {
+        { ToolId::Pen,         "Pen",         "P" },
+        { ToolId::Highlighter, "Highlighter", "H" },
+        { ToolId::Eraser,      "Eraser",      "E" },
+        { ToolId::Select,      "Select",      "V" },
+        { ToolId::Line,        "Line",        "L" },
+        { ToolId::Rectangle,   "Rectangle",   "R" },
+        { ToolId::Ellipse,     "Ellipse",     "O" },
+        { ToolId::Text,        "Text",        "T" },
     };
-    S(a->newDoc,"file.new","New","Ctrl+N");        S(a->open,"file.open","Open","Ctrl+O");
-    S(a->save,"file.save","Save","Ctrl+S");         S(a->saveAs,"file.saveAs","Save As","Ctrl+Shift+S");
-    S(a->undo,"edit.undo","Undo","Ctrl+Z");         S(a->redo,"edit.redo","Redo","Ctrl+Shift+Z");
-    S(a->copy,"edit.copy","Copy","Ctrl+C");         S(a->paste,"edit.paste","Paste","Ctrl+V");
-    S(a->del,"edit.delete","Delete","Del");         S(a->selectAll,"edit.selectAll","Select All","Ctrl+A");
-    S(a->zoomFit,"view.fit","Zoom to Fit","Ctrl+0");S(a->resetView,"view.reset","Reset View","Ctrl+1");
-    S(a->addPage,"page.add","Add Page","Ctrl+Shift+N");
-    S(a->nextPage,"page.next","Next Page","PgDown"); S(a->prevPage,"page.prev","Previous Page","PgUp");
-    S(a->present,"view.present","Presentation","F5");
 
-    connect(a->newDoc,   &QAction::triggered, this, &MainWindow::newDocument);
-    connect(a->open,     &QAction::triggered, this, &MainWindow::openDocument);
-    connect(a->save,     &QAction::triggered, this, [this]{ saveDocument(); });
-    connect(a->saveAs,   &QAction::triggered, this, [this]{ saveDocumentAs(); });
-    connect(a->importPdf,&QAction::triggered, this, &MainWindow::importPdf);
-    connect(a->exportPdf,&QAction::triggered, this, &MainWindow::exportPdf);
-    connect(a->exportPng,&QAction::triggered, this, &MainWindow::exportPng);
-    connect(a->exportSvg,&QAction::triggered, this, &MainWindow::exportSvg);
-    connect(a->insertImg,&QAction::triggered, this, &MainWindow::insertImage);
-    connect(a->undo,     &QAction::triggered, this, [this]{ m_tools->undo(); });
-    connect(a->redo,     &QAction::triggered, this, [this]{ m_tools->redo(); });
-    connect(a->copy,     &QAction::triggered, this, [this]{ m_tools->copySelection(); });
-    connect(a->paste,    &QAction::triggered, this, [this]{ m_tools->paste(); });
-    connect(a->del,      &QAction::triggered, this, [this]{ m_tools->deleteSelection(); });
-    connect(a->selectAll,&QAction::triggered, this, [this]{ m_tools->selectAll(); });
-    connect(a->zoomFit,  &QAction::triggered, this, [this]{ m_canvas->zoomToFit(); });
-    connect(a->resetView,&QAction::triggered, this, [this]{ m_canvas->resetView(); });
-    connect(a->addPage,  &QAction::triggered, this, [this]{ m_doc->setCurrentIndex(m_doc->addPage()); });
-    connect(a->delPage,  &QAction::triggered, this, [this]{ m_doc->removePage(m_doc->currentIndex()); });
-    connect(a->nextPage, &QAction::triggered, this, [this]{ m_doc->setCurrentIndex(m_doc->currentIndex()+1); });
-    connect(a->prevPage, &QAction::triggered, this, [this]{ m_doc->setCurrentIndex(m_doc->currentIndex()-1); });
-    connect(a->present,  &QAction::triggered, this, [this]{ togglePresentation(); });
-    connect(a->prefs,    &QAction::triggered, this, [this]{
-        PreferencesDialog dlg(m_tools.get(), m_theme, m_shortcuts, m_canvas, this); dlg.exec();
-    });
+    m_toolGroup = new QActionGroup(this);
+    m_toolGroup->setExclusive(true);
+
+    for (const auto &d : defs) {
+        auto *a = new QAction(tr(d.name), this);
+        a->setCheckable(true);
+        a->setShortcut(QKeySequence(QString::fromLatin1(d.shortcut)));
+        const ToolId id = d.id;
+        connect(a, &QAction::triggered, this, [this, id]() { m_canvas->setTool(id); });
+        m_toolGroup->addAction(a);
+        m_toolActions[id] = a;
+    }
+    m_toolActions[ToolId::Pen]->setChecked(true);
 }
 
-void MainWindow::buildMenus() {
-    auto* file = menuBar()->addMenu(tr("&File"));
-    file->addActions({a->newDoc, a->open, a->save, a->saveAs});
+void MainWindow::buildMenus()
+{
+    auto add = [&](QMenu *m, const QString &text, const QKeySequence &sc,
+                   auto slot) -> QAction * {
+        auto *a = new QAction(text, this);
+        if (!sc.isEmpty())
+            a->setShortcut(sc);
+        connect(a, &QAction::triggered, this, slot);
+        m->addAction(a);
+        return a;
+    };
+
+    // File
+    QMenu *file = menuBar()->addMenu(tr("&File"));
+    add(file, tr("&New"),  QKeySequence::New,  &MainWindow::newDocument);
+    add(file, tr("&Open…"), QKeySequence::Open, &MainWindow::openDocument);
     file->addSeparator();
-    file->addActions({a->importPdf, a->exportPdf, a->exportPng, a->exportSvg, a->insertImg});
-    auto* edit = menuBar()->addMenu(tr("&Edit"));
-    edit->addActions({a->undo, a->redo});
+    add(file, tr("&Save"),    QKeySequence::Save,      &MainWindow::saveDocument);
+    add(file, tr("Save &As…"), QKeySequence::SaveAs,   &MainWindow::saveDocumentAs);
+    file->addSeparator();
+    QMenu *exp = file->addMenu(tr("&Export"));
+    add(exp, tr("PNG…"), QKeySequence(), &MainWindow::exportPng);
+    add(exp, tr("SVG…"), QKeySequence(), &MainWindow::exportSvg);
+    add(exp, tr("PDF…"), QKeySequence(), &MainWindow::exportPdf);
+    file->addSeparator();
+    add(file, tr("&Quit"), QKeySequence::Quit, [this]() { close(); });
+
+    // Edit
+    QMenu *edit = menuBar()->addMenu(tr("&Edit"));
+    QAction *undo = m_doc->undoStack()->createUndoAction(this, tr("&Undo"));
+    undo->setShortcut(QKeySequence::Undo);
+    QAction *redo = m_doc->undoStack()->createRedoAction(this, tr("&Redo"));
+    redo->setShortcut(QKeySequence::Redo);
+    edit->addAction(undo);
+    edit->addAction(redo);
     edit->addSeparator();
-    edit->addActions({a->copy, a->paste, a->del, a->selectAll});
-    auto* view = menuBar()->addMenu(tr("&View"));
-    view->addActions({a->zoomFit, a->resetView, a->present});
-    auto* page = menuBar()->addMenu(tr("&Page"));
-    page->addActions({a->addPage, a->delPage, a->nextPage, a->prevPage});
-    auto* tools = menuBar()->addMenu(tr("&Tools"));
-    tools->addAction(a->prefs);
+    add(edit, tr("&Delete Selection"), QKeySequence::Delete,
+        [this]() { m_canvas->deleteSelection(); });
+    add(edit, tr("Select &All"), QKeySequence::SelectAll,
+        [this]() { m_canvas->selectAll(); });
+    add(edit, tr("&Clear Selection"), QKeySequence(),
+        [this]() { m_canvas->clearSelection(); });
+
+    // View
+    QMenu *view = menuBar()->addMenu(tr("&View"));
+    add(view, tr("Zoom &In"),  QKeySequence::ZoomIn,  [this]() { m_canvas->zoomIn(); });
+    add(view, tr("Zoom &Out"), QKeySequence::ZoomOut, [this]() { m_canvas->zoomOut(); });
+    add(view, tr("&Reset Zoom"), QKeySequence(Qt::CTRL | Qt::Key_0),
+        [this]() { m_canvas->resetView(); });
+    add(view, tr("Zoom to &Fit"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F),
+        [this]() { m_canvas->zoomToFit(); });
+
+    // Tools
+    QMenu *tools = menuBar()->addMenu(tr("&Tools"));
+    for (const auto &pair : m_toolActions)
+        tools->addAction(pair.second);
+
+    // Page
+    QMenu *page = menuBar()->addMenu(tr("&Page"));
+    add(page, tr("&Add Page"), QKeySequence(Qt::CTRL | Qt::Key_Return),
+        &MainWindow::addPage);
+    add(page, tr("&Delete Page"), QKeySequence(),  &MainWindow::deletePage);
+    add(page, tr("&Next Page"),   QKeySequence(Qt::Key_PageDown), &MainWindow::nextPage);
+    add(page, tr("&Previous Page"), QKeySequence(Qt::Key_PageUp), &MainWindow::prevPage);
+    page->addSeparator();
+    QMenu *bg = page->addMenu(tr("&Background"));
+    add(bg, tr("Blank"), QKeySequence(), [this]() { setBackgroundKind(BackgroundKind::Blank); });
+    add(bg, tr("Grid"),  QKeySequence(), [this]() { setBackgroundKind(BackgroundKind::Grid); });
+    add(bg, tr("Lines"), QKeySequence(), [this]() { setBackgroundKind(BackgroundKind::Lines); });
+    add(bg, tr("Dots"),  QKeySequence(), [this]() { setBackgroundKind(BackgroundKind::Dots); });
+
+    // Settings + Help
+    QMenu *settings = menuBar()->addMenu(tr("&Settings"));
+    add(settings, tr("&Preferences…"), QKeySequence(Qt::CTRL | Qt::Key_Comma),
+        &MainWindow::showPreferences);
+
+    QMenu *help = menuBar()->addMenu(tr("&Help"));
+    add(help, tr("&About InkBoard"), QKeySequence(), &MainWindow::about);
 }
 
-void MainWindow::buildDocks() {
-    m_toolbar = new ToolBarWidget(m_shortcuts, this);
-    addToolBar(Qt::LeftToolBarArea, m_toolbar);
-    connect(m_toolbar, &ToolBarWidget::toolSelected, this, [this](ToolId id){
-        m_tools->setActiveTool(id);
-        m_canvas->setCursor(m_tools->currentCursor());
-    });
+void MainWindow::buildToolbars()
+{
+    auto *toolBar = addToolBar(tr("Tools"));
+    toolBar->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    toolBar->setMovable(false);
+    for (const auto &pair : m_toolActions)
+        toolBar->addAction(pair.second);
 
-    auto* dock = new QDockWidget(tr("Palette"), this);
-    m_palette = new ColorPalette(&m_tools->settings(), dock);
-    dock->setWidget(m_palette);
-    addDockWidget(Qt::RightDockWidgetArea, dock);
-    connect(m_palette, &ColorPalette::colorPicked, this, [this](const QColor& c){ applyColorToActiveTool(c); });
-    connect(m_palette, &ColorPalette::sizePicked, this, [this](double s){ applySizeToActiveTool(s); });
-    connect(m_palette, &ColorPalette::customColorRequested, this, [this]{
-        const QColor c = QColorDialog::getColor(m_tools->settings().penColor, this, tr("Color"));
-        if (c.isValid()) applyColorToActiveTool(c);
-    });
+    addToolBarBreak();
+
+    auto *props = addToolBar(tr("Properties"));
+    props->setMovable(false);
+    addColorSwatches(props);
+    props->addSeparator();
+
+    props->addWidget(new QLabel(tr(" Size ")));
+    m_widthSpin = new QSpinBox(props);
+    m_widthSpin->setRange(1, 200);
+    m_widthSpin->setValue(3);
+    m_widthSpin->setSuffix(tr(" px"));
+    connect(m_widthSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [this](int v) { setActiveWidth(static_cast<double>(v)); });
+    props->addWidget(m_widthSpin);
+
+    props->addSeparator();
+    auto *addPageBtn = new QToolButton(props);
+    addPageBtn->setText(tr("+ Page"));
+    connect(addPageBtn, &QToolButton::clicked, this, &MainWindow::addPage);
+    props->addWidget(addPageBtn);
+
+    auto *prevBtn = new QToolButton(props);
+    prevBtn->setText(tr("◀"));
+    connect(prevBtn, &QToolButton::clicked, this, &MainWindow::prevPage);
+    props->addWidget(prevBtn);
+
+    auto *nextBtn = new QToolButton(props);
+    nextBtn->setText(tr("▶"));
+    connect(nextBtn, &QToolButton::clicked, this, &MainWindow::nextPage);
+    props->addWidget(nextBtn);
 }
 
-void MainWindow::applyColorToActiveTool(const QColor& c) {
-    ToolSettings& s = m_tools->settings();
-    switch (m_tools->activeTool()) {
+void MainWindow::addColorSwatches(QToolBar *tb)
+{
+    for (const QColor &c : m_canvas->settings().palette) {
+        QPixmap pm(18, 18);
+        pm.fill(c);
+        auto *b = new QToolButton(tb);
+        b->setIcon(QIcon(pm));
+        b->setToolTip(c.name());
+        connect(b, &QToolButton::clicked, this, [this, c]() { setActiveColor(c); });
+        tb->addWidget(b);
+    }
+    auto *more = new QToolButton(tb);
+    more->setText(QStringLiteral("…"));
+    more->setToolTip(tr("Custom color"));
+    connect(more, &QToolButton::clicked, this, [this]() {
+        const QColor c = QColorDialog::getColor(Qt::black, this, tr("Select Color"));
+        if (c.isValid())
+            setActiveColor(c);
+    });
+    tb->addWidget(more);
+}
+
+void MainWindow::buildStatusBar()
+{
+    m_pageLabel = new QLabel(this);
+    m_zoomLabel = new QLabel(this);
+    m_posLabel  = new QLabel(this);
+    statusBar()->addWidget(m_pageLabel);
+    statusBar()->addPermanentWidget(m_posLabel);
+    statusBar()->addPermanentWidget(m_zoomLabel);
+}
+
+// ---- settings persistence --------------------------------------------------
+void MainWindow::loadSettings()
+{
+    auto &s = m_canvas->settings();
+    s.penWidth  = Settings::get<double>(QStringLiteral("pen/width"), s.penWidth);
+    const QString pc =
+        Settings::get<QString>(QStringLiteral("pen/color"),
+                               s.penColor.name(QColor::HexArgb));
+    if (QColor(pc).isValid())
+        s.penColor = QColor(pc);
+    s.hlWidth      = Settings::get<double>(QStringLiteral("hl/width"), s.hlWidth);
+    s.hlOpacity    = Settings::get<double>(QStringLiteral("hl/opacity"), s.hlOpacity);
+    s.eraserRadius = Settings::get<double>(QStringLiteral("eraser/radius"), s.eraserRadius);
+
+    const int ts = Settings::get<int>(QStringLiteral("text/size"),
+                                      s.textFont.pointSize() > 0 ? s.textFont.pointSize() : 18);
+    QFont f = s.textFont;
+    f.setPointSize(ts);
+    s.textFont = f;
+
+    m_autosaveSeconds =
+        Settings::get<int>(QStringLiteral("app/autosaveSeconds"), m_autosaveSeconds);
+}
+
+void MainWindow::saveSettingsToStore()
+{
+    const auto &s = m_canvas->settings();
+    Settings::set<double>(QStringLiteral("pen/width"), s.penWidth);
+    Settings::set<QString>(QStringLiteral("pen/color"), s.penColor.name(QColor::HexArgb));
+    Settings::set<double>(QStringLiteral("hl/width"), s.hlWidth);
+    Settings::set<double>(QStringLiteral("hl/opacity"), s.hlOpacity);
+    Settings::set<double>(QStringLiteral("eraser/radius"), s.eraserRadius);
+    Settings::set<int>(QStringLiteral("text/size"), s.textFont.pointSize());
+    Settings::set<int>(QStringLiteral("app/autosaveSeconds"), m_autosaveSeconds);
+}
+
+void MainWindow::applyAutosave()
+{
+    if (m_autosaveSeconds > 0)
+        m_autosaveTimer->start(m_autosaveSeconds * 1000);
+    else
+        m_autosaveTimer->stop();
+}
+
+// ---- tool property helpers -------------------------------------------------
+void MainWindow::setActiveColor(const QColor &c)
+{
+    auto &s = m_canvas->settings();
+    switch (s.tool) {
     case ToolId::Highlighter: s.hlColor = c; break;
-    case ToolId::Shape:       s.shapeColor = c; break;
+    case ToolId::Line:
+    case ToolId::Rectangle:
+    case ToolId::Ellipse:     s.shapeColor = c; break;
     case ToolId::Text:        s.textColor = c; break;
-    case ToolId::Laser:       s.laserColor = c; break;
     default:                  s.penColor = c; break;
     }
+    m_canvas->refresh();
 }
-void MainWindow::applySizeToActiveTool(double sz) {
-    ToolSettings& s = m_tools->settings();
-    switch (m_tools->activeTool()) {
-    case ToolId::Highlighter: s.hlSize = sz; break;
-    case ToolId::Shape:       s.shapeWidth = sz; break;
-    case ToolId::Eraser:      s.eraserRadius = sz; break;
-    case ToolId::Laser:       s.laserSize = sz; break;
-    default:                  s.penSize = sz; break;
+
+void MainWindow::setActiveWidth(double w)
+{
+    auto &s = m_canvas->settings();
+    switch (s.tool) {
+    case ToolId::Highlighter: s.hlWidth = w; break;
+    case ToolId::Line:
+    case ToolId::Rectangle:
+    case ToolId::Ellipse:     s.shapeWidth = w; break;
+    case ToolId::Eraser:      s.eraserRadius = w; break;
+    default:                  s.penWidth = w; break;
+    }
+    m_canvas->refresh();
+}
+
+double MainWindow::currentToolWidth() const
+{
+    const auto &s = m_canvas->settings();
+    switch (s.tool) {
+    case ToolId::Highlighter: return s.hlWidth;
+    case ToolId::Line:
+    case ToolId::Rectangle:
+    case ToolId::Ellipse:     return s.shapeWidth;
+    case ToolId::Eraser:      return s.eraserRadius;
+    default:                  return s.penWidth;
     }
 }
 
-void MainWindow::updateTitle() {
-    const QString name = m_doc->filePath().isEmpty() ? tr("Untitled")
-                        : QFileInfo(m_doc->filePath()).fileName();
-    setWindowTitle(QString("%1%2 - InkBoard (page %3/%4)")
-                   .arg(m_doc->isModified() ? "* " : "", name)
-                   .arg(m_doc->currentIndex()+1).arg(m_doc->pageCount()));
-}
-
-// ---- file ops --------------------------------------------------------------
-void MainWindow::newDocument() {
-    if (m_doc->isModified() &&
-        QMessageBox::question(this, tr("New"), tr("Discard unsaved changes?")) != QMessageBox::Yes)
+void MainWindow::syncWidthSpin()
+{
+    if (!m_widthSpin)
         return;
-    delete m_doc;
-    m_doc = new Document(this);
-    m_autosave->setDocument(m_doc);
-    m_canvas->setDocument(m_doc);
-    connect(m_doc, &Document::modifiedChanged, this, [this](bool){ updateTitle(); });
-    connect(m_doc, &Document::pagesChanged, this, [this]{ updateTitle(); });
-    m_autosave->clearRecovery();
-    updateTitle();
+    const QSignalBlocker blocker(m_widthSpin);
+    m_widthSpin->setValue(qRound(currentToolWidth()));
 }
 
-void MainWindow::openDocument() {
-    const QString path = QFileDialog::getOpenFileName(this, tr("Open"), {}, tr("InkBoard (*.iboard)"));
-    if (path.isEmpty()) return;
-    QString err;
-    if (!board::load(*m_doc, path, &err)) { QMessageBox::warning(this, tr("Open"), err); return; }
-    m_doc->setFilePath(path);
-    m_doc->setModified(false);
-    updateTitle();
-    m_canvas->zoomToFit();
-}
-
-bool MainWindow::saveDocument() {
-    if (m_doc->filePath().isEmpty()) return saveDocumentAs();
-    QString err;
-    if (!board::save(*m_doc, m_doc->filePath(), &err)) { QMessageBox::warning(this, tr("Save"), err); return false; }
-    m_doc->setModified(false);
-    m_autosave->clearRecovery();
-    statusBar()->showMessage(tr("Saved"), 2000);
-    return true;
-}
-
-bool MainWindow::saveDocumentAs() {
-    QString path = QFileDialog::getSaveFileName(this, tr("Save As"), "untitled.iboard", tr("InkBoard (*.iboard)"));
-    if (path.isEmpty()) return false;
-    if (!path.endsWith(".iboard")) path += ".iboard";
-    m_doc->setFilePath(path);
-    return saveDocument();
-}
-
-void MainWindow::importPdf() {
-    const QString path = QFileDialog::getOpenFileName(this, tr("Import PDF"), {}, tr("PDF (*.pdf)"));
-    if (path.isEmpty()) return;
-    QString err;
-    if (!pdf::importInto(*m_doc, path, 200.0, &err)) { QMessageBox::warning(this, tr("Import PDF"), err); return; }
-    updateTitle();
-    m_canvas->zoomToFit();
-}
-
-void MainWindow::exportPdf() {
-    QString path = QFileDialog::getSaveFileName(this, tr("Export PDF"), "board.pdf", tr("PDF (*.pdf)"));
-    if (path.isEmpty()) return;
-    if (!path.endsWith(".pdf")) path += ".pdf";
-    QString err;
-    if (!exporters::exportPdf(*m_doc, path, &err)) { QMessageBox::warning(this, tr("Export PDF"), err); return; }
-    statusBar()->showMessage(tr("Exported PDF"), 2000);
-}
-
-void MainWindow::exportPng() {
-    QString path = QFileDialog::getSaveFileName(this, tr("Export PNG"), "page.png", tr("PNG (*.png)"));
-    if (path.isEmpty()) return;
-    if (!path.endsWith(".png")) path += ".png";
-    QString err;
-    if (!exporters::exportPng(m_doc->current(), path, 2.0, &err)) { QMessageBox::warning(this, tr("Export PNG"), err); return; }
-    statusBar()->showMessage(tr("Exported PNG"), 2000);
-}
-
-void MainWindow::exportSvg() {
-    QString path = QFileDialog::getSaveFileName(this, tr("Export SVG"), "page.svg", tr("SVG (*.svg)"));
-    if (path.isEmpty()) return;
-    if (!path.endsWith(".svg")) path += ".svg";
-    QString err;
-    if (!exporters::exportSvg(m_doc->current(), path, &err)) { QMessageBox::warning(this, tr("Export SVG"), err); return; }
-    statusBar()->showMessage(tr("Exported SVG"), 2000);
-}
-
-void MainWindow::insertImage() {
-    const QString path = QFileDialog::getOpenFileName(this, tr("Insert Image"), {},
-                            tr("Images (*.png *.jpg *.jpeg *.bmp *.webp)"));
-    if (path.isEmpty()) return;
-    QImage img(path);
-    if (img.isNull()) { QMessageBox::warning(this, tr("Insert Image"), tr("Could not load image.")); return; }
-    m_tools->insertImageAtCenter(img);
-}
-
-void MainWindow::editText(TextItem* item) {
-    if (!item) return;
-    bool ok = false;
-    const QString text = QInputDialog::getMultiLineText(this, tr("Text"), tr("Enter text:"), item->text, &ok);
-    if (!ok) return;
-    item->text = text;
-    m_doc->markContentChanged();
+void MainWindow::setBackgroundKind(BackgroundKind k)
+{
+    if (!m_doc)
+        return;
+    m_doc->current().background = k;
+    m_doc->markChanged();
     m_canvas->update();
 }
 
-void MainWindow::togglePresentation() {
-    m_presentation = !m_presentation;
-    menuBar()->setVisible(!m_presentation);
-    m_toolbar->setVisible(!m_presentation);
-    for (QDockWidget* d : findChildren<QDockWidget*>()) d->setVisible(!m_presentation);
-    if (m_presentation) showFullScreen(); else showNormal();
+// ---- file operations -------------------------------------------------------
+bool MainWindow::maybeSave()
+{
+    if (!m_doc->modified())
+        return true;
+    const auto r = QMessageBox::warning(
+        this, tr("InkBoard"),
+        tr("The document has unsaved changes.\nDo you want to save them?"),
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
+    if (r == QMessageBox::Save)
+        return saveDocument();
+    if (r == QMessageBox::Cancel)
+        return false;
+    return true;
 }
 
-void MainWindow::closeEvent(QCloseEvent* e) {
-    if (m_doc->isModified()) {
-        const auto btn = QMessageBox::question(this, tr("Quit"),
-            tr("Save changes before closing?"),
-            QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
-        if (btn == QMessageBox::Cancel) { e->ignore(); return; }
-        if (btn == QMessageBox::Save && !saveDocument()) { e->ignore(); return; }
+void MainWindow::newDocument()
+{
+    if (!maybeSave())
+        return;
+    std::vector<Page> pages;
+    pages.push_back(makeBlankPage());
+    m_doc->setPages(std::move(pages));
+    m_doc->setCurrentIndex(0);
+    m_doc->setFilePath(QString());
+    m_doc->undoStack()->clear();
+    m_doc->setModified(false);
+    m_canvas->clearSelection();
+    m_canvas->resetView();
+    updateTitle();
+    updatePageLabel();
+    m_canvas->update();
+}
+
+void MainWindow::openDocument()
+{
+    if (!maybeSave())
+        return;
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Open"), QString(),
+        tr("InkBoard files (*.iboard);;All files (*)"));
+    if (path.isEmpty())
+        return;
+
+    QString err;
+    if (!io::Serializer::loadFromFile(*m_doc, path, &err)) {
+        QMessageBox::warning(this, tr("Open failed"),
+                             tr("Could not open the file:\n%1").arg(err));
+        return;
     }
-    m_autosave->clearRecovery();
-    e->accept();
+    m_doc->setFilePath(path);
+    m_doc->setCurrentIndex(0);
+    m_doc->undoStack()->clear();
+    m_doc->setModified(false);
+    m_canvas->clearSelection();
+    m_canvas->zoomToFit();
+    updateTitle();
+    updatePageLabel();
+    m_canvas->update();
+}
+
+bool MainWindow::saveTo(const QString &path)
+{
+    QString err;
+    if (!io::Serializer::saveToFile(*m_doc, path, &err)) {
+        QMessageBox::warning(this, tr("Save failed"),
+                             tr("Could not save the file:\n%1").arg(err));
+        return false;
+    }
+    m_doc->setFilePath(path);
+    m_doc->undoStack()->setClean();
+    m_doc->setModified(false);
+    updateTitle();
+    statusBar()->showMessage(tr("Saved %1").arg(QFileInfo(path).fileName()), 3000);
+    return true;
+}
+
+bool MainWindow::saveDocument()
+{
+    if (m_doc->filePath().isEmpty())
+        return saveDocumentAs();
+    return saveTo(m_doc->filePath());
+}
+
+bool MainWindow::saveDocumentAs()
+{
+    QString path = QFileDialog::getSaveFileName(
+        this, tr("Save As"), QStringLiteral("Untitled.iboard"),
+        tr("InkBoard files (*.iboard)"));
+    if (path.isEmpty())
+        return false;
+    if (!path.endsWith(QStringLiteral(".iboard"), Qt::CaseInsensitive))
+        path += QStringLiteral(".iboard");
+    return saveTo(path);
+}
+
+void MainWindow::exportPng()
+{
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("Export PNG"), QStringLiteral("page.png"), tr("PNG image (*.png)"));
+    if (path.isEmpty())
+        return;
+    QString err;
+    if (!io::Exporter::exportPng(m_doc->current(), path, 2.0, &err))
+        QMessageBox::warning(this, tr("Export failed"), err);
+}
+
+void MainWindow::exportSvg()
+{
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("Export SVG"), QStringLiteral("page.svg"), tr("SVG image (*.svg)"));
+    if (path.isEmpty())
+        return;
+    QString err;
+    if (!io::Exporter::exportSvg(m_doc->current(), path, &err))
+        QMessageBox::warning(this, tr("Export failed"), err);
+}
+
+void MainWindow::exportPdf()
+{
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("Export PDF"), QStringLiteral("document.pdf"), tr("PDF document (*.pdf)"));
+    if (path.isEmpty())
+        return;
+    QString err;
+    if (!io::Exporter::exportPdf(*m_doc, path, &err))
+        QMessageBox::warning(this, tr("Export failed"), err);
+}
+
+// ---- page navigation -------------------------------------------------------
+void MainWindow::addPage()
+{
+    m_doc->addPage();
+    m_doc->setCurrentIndex(m_doc->pageCount() - 1);
+    updatePageLabel();
+    m_canvas->update();
+}
+
+void MainWindow::deletePage()
+{
+    if (m_doc->pageCount() <= 1) {
+        QMessageBox::information(this, tr("InkBoard"),
+                                tr("Cannot delete the only page."));
+        return;
+    }
+    m_doc->removePage(m_doc->currentIndex());
+    updatePageLabel();
+    m_canvas->update();
+}
+
+void MainWindow::nextPage()
+{
+    if (m_doc->currentIndex() + 1 < m_doc->pageCount())
+        m_doc->setCurrentIndex(m_doc->currentIndex() + 1);
+}
+
+void MainWindow::prevPage()
+{
+    if (m_doc->currentIndex() > 0)
+        m_doc->setCurrentIndex(m_doc->currentIndex() - 1);
+}
+
+// ---- misc ------------------------------------------------------------------
+void MainWindow::showPreferences()
+{
+    PreferencesDialog dlg(m_canvas->settings(), m_autosaveSeconds, this);
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+
+    ToolSettings ns = dlg.toolSettings();
+    ns.tool    = m_canvas->settings().tool;    // preserve active tool
+    ns.palette = m_canvas->settings().palette; // preserve palette
+    m_canvas->settings() = ns;
+
+    m_autosaveSeconds = dlg.autosaveSeconds();
+    saveSettingsToStore();
+    applyAutosave();
+    syncWidthSpin();
+    m_canvas->refresh();
+}
+
+void MainWindow::about()
+{
+    QMessageBox::about(
+        this, tr("About InkBoard"),
+        tr("<b>InkBoard %1</b><br>"
+           "A pressure-aware teaching whiteboard for pen displays.<br><br>"
+           "Built with Qt 6.")
+            .arg(QStringLiteral(INKBOARD_VERSION)));
+}
+
+void MainWindow::updateTitle()
+{
+    const QString name = m_doc->filePath().isEmpty()
+                             ? tr("Untitled")
+                             : QFileInfo(m_doc->filePath()).fileName();
+    setWindowTitle(QString("%1[*] — InkBoard").arg(name));
+    setWindowModified(m_doc->modified());
+}
+
+void MainWindow::updateZoomLabel()
+{
+    if (m_zoomLabel)
+        m_zoomLabel->setText(QString("%1%").arg(qRound(m_canvas->zoomPercent())));
+}
+
+void MainWindow::updatePageLabel()
+{
+    if (m_pageLabel)
+        m_pageLabel->setText(tr("Page %1 / %2")
+                                 .arg(m_doc->currentIndex() + 1)
+                                 .arg(m_doc->pageCount()));
+}
+
+void MainWindow::closeEvent(QCloseEvent *e)
+{
+    if (maybeSave())
+        e->accept();
+    else
+        e->ignore();
 }
 
 } // namespace ib
 EOF
 
-log "PART 5 complete: MainWindow, UI, theming, shortcuts, exporters, PDF import, autosave written."
-# =============================================================================
-#  END OF PART 5  —  append PART 6 (README, packaging, GitHub Actions .exe) below
-# =============================================================================
-
-# =============================================================================
-#  PART 6 (FINAL)  —  include polish, README, packaging, CI (.exe), closing
-#  Append below PART 5. Completes the project and prints build instructions.
-# =============================================================================
-log "PART 6: include polish, README, packaging, and GitHub Actions CI"
-
-# ---- 1. Portable include-safety polish -------------------------------------
-# Guarantees a couple of headers are present regardless of transitive includes,
-# so the build is airtight across compilers. Idempotent (safe to re-run).
-ensure_include() {
-    local file="$1" inc="$2"
-    [ -f "$file" ] || return 0
-    grep -qF "$inc" "$file" && return 0
-    awk -v inc="$inc" 'NR==1{print; print inc; next}1' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
-}
-ensure_include src/ui/PreferencesDialog.cpp '#include <QColorDialog>'
-ensure_include src/app/MainWindow.cpp        '#include <QFileInfo>'
-log "Include polish applied."
-
-# ---- 2. Optional unit test (only built with -DINKBOARD_BUILD_TESTS=ON) -----
-cat > tests/CMakeLists.txt <<'EOF'
-find_package(Qt6 REQUIRED COMPONENTS Test Gui)
-qt_add_executable(ink_tests test_model.cpp
-    ${CMAKE_SOURCE_DIR}/src/ink/Smoothing.cpp
-    ${CMAKE_SOURCE_DIR}/src/ink/Tessellator.cpp)
-target_include_directories(ink_tests PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_link_libraries(ink_tests PRIVATE Qt6::Test Qt6::Gui)
-add_test(NAME ink_tests COMMAND ink_tests)
-EOF
-
-cat > tests/test_model.cpp <<'EOF'
-#include <QtTest>
-#include "ink/Smoothing.h"
-#include "ink/Tessellator.h"
-
-class InkTests : public QObject {
-    Q_OBJECT
-private slots:
-    void catmullRomIsSmoothAndBounded() {
-        std::vector<QPointF> pts { {0,0},{10,10},{20,0},{30,10} };
-        const QPainterPath p = ib::ink::catmullRomPath(pts);
-        QVERIFY(p.elementCount() > 0);
-        QVERIFY(p.length() > 0.0);
-    }
-    void ribbonHasArea() {
-        std::vector<ib::StrokePoint> s(3);
-        s[0].pos = {0,0}; s[1].pos = {20,0}; s[2].pos = {40,0};
-        for (auto& sp : s) sp.pressure = 1.0f;
-        const QPainterPath r = ib::ink::buildRibbon(s, 6.0, true);
-        QVERIFY(!r.boundingRect().isEmpty());
-    }
-};
-QTEST_MAIN(InkTests)
-#include "test_model.moc"
-EOF
-
-# ---- 3. README ------------------------------------------------------------
-cat > README.md <<'EOF'
-# InkBoard
-
-A lean, professional pen / teaching whiteboard for Wacom tablets, built in
-modern C++20 + Qt 6. Vector ink stays crisp at any zoom; PDF/SVG export stays
-vector; touch pans/zooms while the pen inks.
-
-## Features (essential-only, no bloat)
-- Pressure/tilt vector ink (pen + highlighter) with Catmull-Rom smoothing + stabilizer.
-- Crisp, resolution-independent rendering (GPU canvas, dirty-rect aware).
-- Pen vs. touch separation, palm rejection, two-finger pan/pinch/rotate, finger-draw toggle.
-- Tools: pen, highlighter, eraser (stroke + area, pen-eraser end), select (lasso/rect,
-  move/scale/rotate, copy/paste/delete), shapes (snapping), text, image, fading laser.
-- Infinite canvas, layers, multi-page notebooks, full undo/redo.
-- Light/Dark/System theme + accent, remappable shortcuts, presentation mode.
-- PDF import + annotate; vector PDF / PNG / SVG export.
-- Native `.iboard` format (lossless round-trip), autosave + crash recovery.
-- Configurable pointer vanish delay + fade-out easing on proximity loss.
-
-## Build (local)
-Requires CMake >= 3.24, a C++20 compiler, and Qt 6.5+ (with the **Qt PDF** module).
+log "PART 5 complete: MainWindow and PreferencesDialog written."
+# ---------------------------------------------------------------------------
+#  END OF PART 5  —  append PART 6 (NSIS packaging + README + closing) below
+# ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+#  PART 6 of 6 : Windows installer script, README, and closing banner
+#  Append below PART 5. This finishes setup.sh.
+# ---------------------------------------------------------------------------
+log "PART 6: writing packaging installer and README"
 
+# ---------------------------------------------------------------------------
+#  packaging/installer.nsi  — NSIS (MUI2) installer for the deployed dist/
+# ---------------------------------------------------------------------------
+cat > packaging/installer.nsi <<'NSIS_EOF'
+; InkBoard Windows installer
+; Compiled by build.yml with:  makensis.exe packaging/installer.nsi
+; (invoked from the pen-whiteboard/ directory, so relative paths resolve there)
 
+!include "MUI2.nsh"
 
-# =============================================================================
-#  PART 6 (FINAL)  —  correctness fix, README, packaging, closing instructions
-#  Append below PART 5. Does NOT contain the CI workflow (added separately).
-# =============================================================================
-log "PART 6: correctness fixup, README, packaging, and finishing up"
-
-# ---- 6.1 Correctness fix: PreferencesDialog uses QColorDialog --------------
-# Ensure the include exists (portable; no sed -i differences across OSes).
-if ! grep -q '#include <QColorDialog>' src/ui/PreferencesDialog.cpp; then
-    tmp="$(mktemp)"
-    printf '#include <QColorDialog>\n' > "$tmp"
-    cat src/ui/PreferencesDialog.cpp >> "$tmp"
-    mv "$tmp" src/ui/PreferencesDialog.cpp
-    log "Added missing <QColorDialog> include to PreferencesDialog.cpp"
-fi
-
-# ---- 6.2 Minimal test target (only used when -DINKBOARD_BUILD_TESTS=ON) -----
-cat > tests/CMakeLists.txt <<'EOF'
-# Lightweight smoke test so enabling INKBOARD_BUILD_TESTS never breaks config.
-add_test(NAME smoke COMMAND ${CMAKE_COMMAND} -E echo "InkBoard smoke test OK")
-EOF
-
-# ---- 6.3 Windows installer script (NSIS) -----------------------------------
-cat > packaging/installer.nsi <<'EOF'
-; InkBoard NSIS installer. Packages the windeployqt output in ./dist.
-!define APPNAME "InkBoard"
-!define EXENAME "InkBoard.exe"
-
-Name "${APPNAME}"
+Name "InkBoard"
 OutFile "InkBoard-Setup.exe"
-InstallDir "$PROGRAMFILES64\${APPNAME}"
+Unicode true
+InstallDir "$PROGRAMFILES64\InkBoard"
+InstallDirRegKey HKLM "Software\InkBoard" "InstallDir"
 RequestExecutionLevel admin
-ShowInstDetails show
 
-Page directory
-Page instfiles
-UninstPage uninstConfirm
-UninstPage instfiles
+!define MUI_ABORTWARNING
+!define MUI_FINISHPAGE_RUN "$INSTDIR\InkBoard.exe"
 
-Section "Install"
-    SetOutPath "$INSTDIR"
-    File /r "dist\*.*"
-    CreateDirectory "$SMPROGRAMS\${APPNAME}"
-    CreateShortcut "$SMPROGRAMS\${APPNAME}\${APPNAME}.lnk" "$INSTDIR\${EXENAME}"
-    CreateShortcut "$DESKTOP\${APPNAME}.lnk" "$INSTDIR\${EXENAME}"
-    WriteUninstaller "$INSTDIR\uninstall.exe"
+!insertmacro MUI_PAGE_WELCOME
+!insertmacro MUI_PAGE_DIRECTORY
+!insertmacro MUI_PAGE_INSTFILES
+!insertmacro MUI_PAGE_FINISH
+
+!insertmacro MUI_UNPAGE_CONFIRM
+!insertmacro MUI_UNPAGE_INSTFILES
+
+!insertmacro MUI_LANGUAGE "English"
+
+Section "InkBoard (required)" SecMain
+  SectionIn RO
+  SetOutPath "$INSTDIR"
+
+  ; Deploy everything windeployqt placed in dist/ (exe + Qt runtime + plugins)
+  File /r "dist\*.*"
+
+  WriteRegStr HKLM "Software\InkBoard" "InstallDir" "$INSTDIR"
+  WriteUninstaller "$INSTDIR\Uninstall.exe"
+
+  CreateDirectory "$SMPROGRAMS\InkBoard"
+  CreateShortcut "$SMPROGRAMS\InkBoard\InkBoard.lnk" "$INSTDIR\InkBoard.exe"
+  CreateShortcut "$SMPROGRAMS\InkBoard\Uninstall InkBoard.lnk" "$INSTDIR\Uninstall.exe"
+  CreateShortcut "$DESKTOP\InkBoard.lnk" "$INSTDIR\InkBoard.exe"
+
+  WriteRegStr   HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\InkBoard" "DisplayName"     "InkBoard"
+  WriteRegStr   HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\InkBoard" "UninstallString" "$\"$INSTDIR\Uninstall.exe$\""
+  WriteRegStr   HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\InkBoard" "DisplayIcon"     "$\"$INSTDIR\InkBoard.exe$\""
+  WriteRegStr   HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\InkBoard" "Publisher"       "InkBoard"
+  WriteRegStr   HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\InkBoard" "DisplayVersion"  "1.0.0"
+  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\InkBoard" "NoModify" 1
+  WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\InkBoard" "NoRepair" 1
 SectionEnd
 
 Section "Uninstall"
-    Delete "$SMPROGRAMS\${APPNAME}\${APPNAME}.lnk"
-    Delete "$DESKTOP\${APPNAME}.lnk"
-    RMDir  "$SMPROGRAMS\${APPNAME}"
-    RMDir /r "$INSTDIR"
+  Delete "$SMPROGRAMS\InkBoard\InkBoard.lnk"
+  Delete "$SMPROGRAMS\InkBoard\Uninstall InkBoard.lnk"
+  RMDir  "$SMPROGRAMS\InkBoard"
+  Delete "$DESKTOP\InkBoard.lnk"
+
+  RMDir /r "$INSTDIR"
+
+  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\InkBoard"
+  DeleteRegKey HKLM "Software\InkBoard"
 SectionEnd
-EOF
+NSIS_EOF
 
-# ---- 6.4 Linux desktop entry (for local packaging) -------------------------
-cat > packaging/inkboard.desktop <<'EOF'
-[Desktop Entry]
-Type=Application
-Name=InkBoard
-Comment=Professional pen / teaching whiteboard
-Exec=InkBoard %F
-Icon=inkboard
-Terminal=false
-Categories=Graphics;Education;
-MimeType=application/x-inkboard;
-EOF
-
-# ---- 6.5 README ------------------------------------------------------------
+# ---------------------------------------------------------------------------
+#  README.md
+# ---------------------------------------------------------------------------
 cat > README.md <<'EOF'
 # InkBoard
 
-A lean, professional pen / teaching whiteboard in modern C++ (C++20 + Qt 6).
-Vector ink stays crisp at any zoom, optimized for Wacom / stylus tablets.
+A pressure-aware teaching whiteboard for pen displays (optimized for Wacom-style
+tablets), built with Qt 6 Widgets.
 
-## Features (essential only)
-- Pressure/tilt vector ink (pen + highlighter), stabilizer, crisp at any zoom
-- Wacom / stylus: pressure curve, tilt, eraser end, hover/proximity, smooth
-  pointer vanish-delay + fade-out
-- Pen vs touch: pen inks, touch pans/pinch-zooms/rotates, palm rejection,
-  finger-drawing toggle
-- Tools: pen, highlighter, eraser (stroke + area), select (lasso/rect, move,
-  scale, rotate, copy/paste, delete), shapes (snap), text, image, laser
-- Infinite canvas, pan/zoom/rotate, layers, multi-page notebooks, full undo/redo
-- Backgrounds/grids, light/dark/system theme + accent, remappable shortcuts,
-  presentation mode
-- PDF import + annotate, vector PDF / PNG / SVG export
-- Native `.iboard` format (lossless round-trip), autosave + crash recovery
+## Features
 
-## Build (local)
+- Pressure-sensitive **pen** and **highlighter** (via `QTabletEvent`)
+- **Eraser** (stylus eraser tip auto-switches), **shapes** (line / rectangle /
+  ellipse), **text**, and a **selection** tool with move + rubber-band
+- Full **undo / redo** through `QUndoStack`
+- Multi-page documents with **grid / lines / dots / blank** backgrounds
+- **Layers** per page
+- Infinite pan (space-drag or middle mouse) and cursor-anchored zoom (wheel)
+- Native `.iboard` JSON format, plus **PNG / SVG / PDF** export
+- **Autosave**, persistent preferences
 
-Prerequisites: CMake >= 3.24, a C++20 compiler, and Qt 6.5+ with the
-`Widgets, Gui, Svg, PrintSupport, Pdf, OpenGLWidgets` modules.
+## Building locally
+
+Requirements: Qt 6.5+ (Core, Gui, Widgets, Svg, PrintSupport), CMake 3.21+, a
+C++17 compiler.
+bash setup.sh              # generates the pen-whiteboard/ project
+cd pen-whiteboard
 cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --parallel
-./build/bin/InkBoard        # Windows: buildbinReleaseInkBoard.exe
+cmake --build build --config Release
 
+The executable is written to `build/bin/` (or `build/bin/Release/` with
+multi-config generators such as Visual Studio).
 
-Options: `-DINKBOARD_USE_OPENGL=ON` (default), `-DINKBOARD_ENABLE_SANITIZERS=ON`
-(Debug), `-DINKBOARD_BUILD_TESTS=ON`.
+## Windows CI build
 
-## Windows .exe via GitHub Actions
-Add the provided workflow to `.github/workflows/build.yml`, push, and download
-the `InkBoard-windows-portable` and `InkBoard-windows-installer` artifacts.
+Pushing to `main` runs `.github/workflows/build.yml`, which regenerates the
+project from `setup.sh`, compiles it with MSVC + Qt, runs `windeployqt`, builds
+an NSIS installer, and uploads the portable build, the installer, and the build
+log as artifacts.
+
+## Keyboard shortcuts
+
+| Key | Action |
+| --- | --- |
+| P / H / E / V | Pen / Highlighter / Eraser / Select |
+| L / R / O / T | Line / Rectangle / Ellipse / Text |
+| Ctrl+Z / Ctrl+Y | Undo / Redo |
+| Ctrl+N / O / S | New / Open / Save |
+| Ctrl++ / Ctrl+- / Ctrl+0 | Zoom in / out / reset |
+| Ctrl+Shift+F | Zoom to fit |
+| PgUp / PgDn | Previous / next page |
+| Del | Delete selection |
+| Space + drag | Pan |
 EOF
 
-# ---- 6.6 Done --------------------------------------------------------------
-cd ..
-log "=============================================================="
-log "InkBoard scaffold complete in ./$PROJECT"
-log ""
-log "Next steps:"
-log "  1) Add the CI workflow file at:"
-log "        $PROJECT/.github/workflows/build.yml"
-log "     (provided SEPARATELY from this script)."
-log "  2) Local build:"
-log "        cd $PROJECT"
-log "        cmake -B build -DCMAKE_BUILD_TYPE=Release"
-log "        cmake --build build --parallel"
-log "  3) Run:"
-log "        ./build/bin/InkBoard   (Windows: build\\bin\\Release\\InkBoard.exe)"
-log "=============================================================="
-# =============================================================================
-#  END OF setup.sh  (all 6 parts)
-# =============================================================================
+log "PART 6 complete: installer and README written."
+
+echo ""
+echo "=================================================================="
+echo "  InkBoard scaffold complete."
+echo "  Project generated in: $(pwd)"
+echo "  Next:"
+echo "    cmake -B build -DCMAKE_BUILD_TYPE=Release"
+echo "    cmake --build build --config Release"
+echo "=================================================================="
