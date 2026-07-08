@@ -9104,5 +9104,3 @@ void PreferencesDialog::applyAndAccept()
 
 } // namespace ib
 EOF
-    if-no-files-found: error
-    retention-days: 7
