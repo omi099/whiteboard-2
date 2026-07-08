@@ -15538,3 +15538,255 @@ grep -qF 'Settings::get<bool>(QStringLiteral("pen/pressure")' src/ui/MainWindow.
 grep -qF 'Settings::set<bool>(QStringLiteral("pen/pressure")' src/ui/MainWindow.cpp || { echo "PART 27 ERROR: save persistence missing"; exit 1; }
 
 log "PART 27 complete: pen pressure sensitivity checkbox added"
+
+# ============================================================
+# PART 28 — production-grade smooth ink (Catmull-Rom + tapered ribbon)
+# ============================================================
+log "PART 28: upgrading StrokeItem to smooth spline ink"
+
+# --- ensure <cmath> is available for sqrt/hypot ---
+grep -qF '#include <cmath>' src/model/StrokeItem.cpp || \
+perl -0777 -i -pe 's{(#include <algorithm>)}{$1\n#include <cmath>}' src/model/StrokeItem.cpp
+
+# --- replace the whole paint() with the smooth-ink implementation ---
+NEW_PAINT=$(cat <<'CPP'
+namespace {
+
+// Linear interpolation with an explicit parameter range (Barry-Goldman form).
+static QPointF interpCR(const QPointF &a, const QPointF &b,
+                        double ta, double tb, double t)
+{
+	if (tb - ta <= 1e-9)
+		return a;
+	const double w = (t - ta) / (tb - ta);
+	return a * (1.0 - w) + b * w;
+}
+
+// Gentle non-destructive pre-smoothing (render-time only) to remove hand jitter.
+static void preSmooth(QVector<QPointF> &pts, QVector<double> &prs)
+{
+	const int n = pts.size();
+	if (n < 3)
+		return;
+	QVector<QPointF> op = pts;
+	QVector<double> oq = prs;
+	for (int i = 1; i < n - 1; ++i) {
+		op[i] = pts[i - 1] * 0.25 + pts[i] * 0.5 + pts[i + 1] * 0.25;
+		oq[i] = prs[i - 1] * 0.25 + prs[i] * 0.5 + prs[i + 1] * 0.25;
+	}
+	pts = op;
+	prs = oq;
+}
+
+// Centripetal Catmull-Rom (alpha = 0.5): sparse points -> dense glassy samples.
+static void smoothStrokeCR(const QVector<QPointF> &pts, const QVector<double> &prs,
+                           QVector<QPointF> &outPts, QVector<double> &outPrs)
+{
+	const int n = pts.size();
+	outPts.clear();
+	outPrs.clear();
+	if (n == 0)
+		return;
+	if (n < 3) {
+		outPts = pts;
+		outPrs = prs;
+		return;
+	}
+
+	auto nextT = [](double ti, const QPointF &pi, const QPointF &pj) {
+		const double dx = pj.x() - pi.x();
+		const double dy = pj.y() - pi.y();
+		const double d = std::sqrt(std::sqrt(dx * dx + dy * dy));
+		return ti + qMax(1e-4, d);
+	};
+
+	outPts.push_back(pts.first());
+	outPrs.push_back(prs.first());
+
+	for (int i = 0; i < n - 1; ++i) {
+		const QPointF p0 = pts[qMax(0, i - 1)];
+		const QPointF p1 = pts[i];
+		const QPointF p2 = pts[i + 1];
+		const QPointF p3 = pts[qMin(n - 1, i + 2)];
+
+		const double t0 = 0.0;
+		const double t1 = nextT(t0, p0, p1);
+		const double t2 = nextT(t1, p1, p2);
+		const double t3 = nextT(t2, p2, p3);
+
+		const double segLen = std::sqrt((p2.x() - p1.x()) * (p2.x() - p1.x()) +
+		                                (p2.y() - p1.y()) * (p2.y() - p1.y()));
+		const int steps = qBound(2, static_cast<int>(segLen / 2.0) + 1, 48);
+
+		const double pr1 = prs[i];
+		const double pr2 = prs[i + 1];
+
+		for (int s = 1; s <= steps; ++s) {
+			const double u = static_cast<double>(s) / static_cast<double>(steps);
+			const double t = t1 + u * (t2 - t1);
+
+			const QPointF A1 = interpCR(p0, p1, t0, t1, t);
+			const QPointF A2 = interpCR(p1, p2, t1, t2, t);
+			const QPointF A3 = interpCR(p2, p3, t2, t3, t);
+			const QPointF B1 = interpCR(A1, A2, t0, t2, t);
+			const QPointF B2 = interpCR(A2, A3, t1, t3, t);
+			const QPointF C  = interpCR(B1, B2, t1, t2, t);
+
+			outPts.push_back(C);
+			outPrs.push_back(pr1 + u * (pr2 - pr1));
+		}
+	}
+}
+
+} // anonymous namespace
+
+void StrokeItem::paint(QPainter &p) const
+{
+	if (points.isEmpty())
+		return;
+
+	p.save();
+	p.setRenderHint(QPainter::Antialiasing, true);
+
+	QColor c = color;
+	c.setAlphaF(c.alphaF() * qBound(0.0, opacity, 1.0));
+
+	// Single dab.
+	if (points.size() == 1) {
+		const double pr = pressureWidth ? qBound(0.15, points.first().pressure, 1.0) : 1.0;
+		const double w  = qMax(0.3, baseWidth * pr);
+		if (glow && glowRadius > 0.0) {
+			QColor gc = glowColor;
+			gc.setAlphaF(0.5 * qBound(0.0, opacity, 1.0));
+			p.setPen(Qt::NoPen);
+			p.setBrush(gc);
+			const double gr = (w + glowRadius) * 0.5;
+			p.drawEllipse(points.first().pos(), gr, gr);
+		}
+		p.setPen(Qt::NoPen);
+		p.setBrush(c);
+		p.drawEllipse(points.first().pos(), w * 0.5, w * 0.5);
+		p.restore();
+		return;
+	}
+
+	// Collect raw points (dropping near-duplicates) + pressures.
+	QVector<QPointF> rawPos;
+	QVector<double> rawPr;
+	rawPos.reserve(points.size());
+	rawPr.reserve(points.size());
+	for (const auto &pt : points) {
+		if (!rawPos.isEmpty()) {
+			const QPointF d = pt.pos() - rawPos.last();
+			if (d.x() * d.x() + d.y() * d.y() < 0.01)
+				continue;
+		}
+		rawPos.push_back(pt.pos());
+		rawPr.push_back(pressureWidth ? qBound(0.15, pt.pressure, 1.0) : 1.0);
+	}
+
+	if (rawPos.size() == 1) {
+		const double w = qMax(0.3, baseWidth * rawPr.first());
+		p.setPen(Qt::NoPen);
+		p.setBrush(c);
+		p.drawEllipse(rawPos.first(), w * 0.5, w * 0.5);
+		p.restore();
+		return;
+	}
+
+	// Two gentle pre-smoothing passes, then spline-smooth into a dense centerline.
+	preSmooth(rawPos, rawPr);
+	preSmooth(rawPos, rawPr);
+
+	QVector<QPointF> sPos;
+	QVector<double> sPr;
+	smoothStrokeCR(rawPos, rawPr, sPos, sPr);
+	const int m = sPos.size();
+
+	QPainterPath center(sPos.first());
+	for (int i = 1; i < m; ++i)
+		center.lineTo(sPos[i]);
+
+	// Glow underlay (laser), following the smoothed centerline.
+	if (glow && glowRadius > 0.0) {
+		const double baseAlpha = qBound(0.0, opacity, 1.0);
+		const auto glowPass = [&](double extra, double a) {
+			QColor gc = glowColor;
+			gc.setAlphaF(a * baseAlpha);
+			QPen gp(gc);
+			gp.setWidthF(qMax(0.3, baseWidth + extra));
+			gp.setCapStyle(Qt::RoundCap);
+			gp.setJoinStyle(Qt::RoundJoin);
+			p.setPen(gp);
+			p.setBrush(Qt::NoBrush);
+			p.drawPath(center);
+		};
+		glowPass(2.0 * glowRadius, 0.30);
+		glowPass(glowRadius, 0.50);
+	}
+
+	// Constant-width tools (highlighter, laser, pressure-off pen): stroke the path.
+	if (!pressureWidth) {
+		QPen pen(c);
+		pen.setWidthF(qMax(0.3, baseWidth));
+		pen.setCapStyle(Qt::RoundCap);
+		pen.setJoinStyle(Qt::RoundJoin);
+		p.setPen(pen);
+		p.setBrush(Qt::NoBrush);
+		p.drawPath(center);
+		p.restore();
+		return;
+	}
+
+	// Pressure pen: tapered variable-width ribbon polygon.
+	QVector<QPointF> left(m);
+	QVector<QPointF> right(m);
+	QPointF prevN(0.0, 0.0);
+	for (int i = 0; i < m; ++i) {
+		QPointF tgt;
+		if (i == 0)
+			tgt = sPos[i + 1] - sPos[i];
+		else if (i == m - 1)
+			tgt = sPos[i] - sPos[i - 1];
+		else
+			tgt = sPos[i + 1] - sPos[i - 1];
+		const double len = std::sqrt(tgt.x() * tgt.x() + tgt.y() * tgt.y());
+		QPointF nrm = (len < 1e-6) ? prevN : QPointF(-tgt.y() / len, tgt.x() / len);
+		prevN = nrm;
+		const double hw = qMax(0.15, 0.5 * baseWidth * sPr[i]);
+		left[i]  = sPos[i] + nrm * hw;
+		right[i] = sPos[i] - nrm * hw;
+	}
+
+	QPainterPath ribbon;
+	ribbon.setFillRule(Qt::WindingFill);
+	ribbon.moveTo(left.first());
+	for (int i = 1; i < m; ++i)
+		ribbon.lineTo(left[i]);
+	for (int i = m - 1; i >= 0; --i)
+		ribbon.lineTo(right[i]);
+	ribbon.closeSubpath();
+
+	p.setPen(Qt::NoPen);
+	p.setBrush(c);
+	p.drawPath(ribbon);
+
+	// Round end caps for smooth start/finish.
+	const double hwStart = qMax(0.15, 0.5 * baseWidth * sPr.first());
+	const double hwEnd   = qMax(0.15, 0.5 * baseWidth * sPr.last());
+	p.drawEllipse(sPos.first(), hwStart, hwStart);
+	p.drawEllipse(sPos.last(), hwEnd, hwEnd);
+
+	p.restore();
+}
+CPP
+)
+export NEW_PAINT
+
+grep -qF "smoothStrokeCR" src/model/StrokeItem.cpp || \
+perl -0777 -i -pe 'BEGIN{$r=$ENV{NEW_PAINT}} s{void\s+StrokeItem::paint\s*\(\s*QPainter\s*&\s*p\s*\)\s*const\b.*?(\nstd::unique_ptr<Item>\s+StrokeItem::clone)}{$r\n$1}s' src/model/StrokeItem.cpp
+
+grep -qF "smoothStrokeCR" src/model/StrokeItem.cpp || { echo "PART 28 ERROR: paint() not upgraded"; exit 1; }
+grep -qF '#include <cmath>' src/model/StrokeItem.cpp || { echo "PART 28 ERROR: cmath include missing"; exit 1; }
+
+log "PART 28 complete: smooth spline ink with tapered pressure ribbon"
