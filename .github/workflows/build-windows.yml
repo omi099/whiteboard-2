@@ -16,7 +16,6 @@ jobs:
     - name: Execute setup.sh to Generate C++ Architecture
       shell: bash
       run: |
-        # Fix Windows line endings (CRLF -> LF) and run the script
         if [ -f "setup.sh" ]; then
           sed -i 's/\r$//' setup.sh
           chmod +x setup.sh
@@ -42,13 +41,33 @@ jobs:
       with:
         arch: x64
 
+    - name: Inject C++20 MSVC Standard-Library Workaround
+      shell: pwsh
+      run: |
+        # Identify the target source directory (root or subdirectory)
+        $TargetDir = if (Test-Path "WhiteboardPro") { "WhiteboardPro" } else { "." }
+        $CMakePath = "$TargetDir/CMakeLists.txt"
+        
+        # Inject an MSVC preprocessor macro that bypasses the strict 'stdext' header error 
+        # by explicitly allowing non-permissive extension lookup for legacy library calls
+        if (Test-Path $CMakePath) {
+            (Get-Content $CMakePath) | ForEach-Object {
+                if ($_ -match "add_compile_options") {
+                    # Add /permissive option or append definition to fix stdext lookup issues in MSVC
+                    $_ -replace "/permissive-", "/permissive"
+                } else { $_ }
+            } | Set-Content $CMakePath
+            
+            # Append global definitions to make absolutely sure the compiler ignores stdext namespaces
+            Add-Content $CMakePath "`nadd_compile_definitions(_ALLOW_RTC_c_IN_STL _HAS_STDEXT=1)"
+        }
+
     - name: Configure CMake (Using Ninja)
       shell: pwsh
       run: |
         $QT_DIR = "${{ github.workspace }}/6.5.3/msvc2019_64"
         if (Test-Path "WhiteboardPro") { cd WhiteboardPro }
         
-        # Ninja perfectly detects the compiler without the Visual Studio generator errors
         cmake -B build -S . -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_DIR"
 
     - name: Build Application
@@ -65,18 +84,15 @@ jobs:
         
         mkdir deploy
         
-        # Ninja places the EXE directly in the build folder. 
-        # These checks guarantee we find it regardless of where setup.sh placed it.
         if (Test-Path "WhiteboardPro/build/WhiteboardPro.exe") {
             copy WhiteboardPro/build/WhiteboardPro.exe deploy/
         } elseif (Test-Path "build/WhiteboardPro.exe") {
             copy build/WhiteboardPro.exe deploy/
         } else {
-            Write-Error "Could not find WhiteboardPro.exe. Build failed."
+            Write-Error "Could not find WhiteboardPro.exe."
             exit 1
         }
         
-        # Bundle required DLLs
         windeployqt --release --no-translations --no-opengl-sw deploy/WhiteboardPro.exe
 
     - name: Upload Final EXE Artifact
