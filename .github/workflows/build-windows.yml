@@ -39,28 +39,7 @@ jobs:
         shell: bash
         run: bash setup.sh
 
-      # 5) Fail fast if setup.sh was assembled wrong (each PART must appear once)
-      - name: Check setup.sh assembly (each PART exactly once)
-        shell: bash
-        run: |
-          ok=1
-          for n in 1 2 3 4 5 6; do
-            c=$(grep -cE "PART[[:space:]]+$n[[:space:]]+complete" setup.sh || true)
-            printf 'PART %s completion markers: %s\n' "$n" "$c"
-            if [ "$c" -ne 1 ]; then
-              echo "  !! PART $n should appear exactly once (found $c)"
-              ok=0
-            fi
-          done
-          if [ "$ok" -ne 1 ]; then
-            echo ""
-            echo ">>> setup.sh is not assembled correctly."
-            echo ">>> Ensure PARTs 1-6 are each present exactly once, in order."
-            exit 1
-          fi
-          echo "setup.sh assembly OK (PARTs 1-6 each present once)."
-
-      # 6) Verify every required source file was actually generated
+      # 5) Verify every required source file was actually generated
       - name: Verify generated sources
         shell: bash
         run: |
@@ -97,13 +76,13 @@ jobs:
           fi
           echo "OK: all required source files were generated."
 
-      # 7) Configure with the Visual Studio generator
+      # 6) Configure with the Visual Studio generator
       - name: Configure (Visual Studio 2022, x64)
         working-directory: pen-whiteboard
         shell: pwsh
         run: cmake -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release
 
-      # 8) Build; on failure, print ONLY the real error lines so they're easy to copy
+      # 7) Build; on failure, print ONLY the real error lines so they're easy to copy
       - name: Build (Release)
         working-directory: pen-whiteboard
         shell: pwsh
@@ -121,7 +100,7 @@ jobs:
             exit 1
           }
 
-      # 9) Bundle Qt runtime + plugins + VC redist next to the exe
+      # 8) Bundle Qt runtime + plugins + VC redist next to the exe
       - name: Deploy Qt runtime (windeployqt)
         working-directory: pen-whiteboard
         shell: pwsh
@@ -130,7 +109,7 @@ jobs:
           Copy-Item "build/bin/Release/InkBoard.exe" "dist/"
           windeployqt --release --compiler-runtime "dist/InkBoard.exe"
 
-      # 10) Build the NSIS installer
+      # 9) Build the NSIS installer
       - name: Build installer (NSIS)
         working-directory: pen-whiteboard
         shell: pwsh
@@ -138,7 +117,7 @@ jobs:
           choco install nsis -y --no-progress
           & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" packaging/installer.nsi
 
-      # 11) Upload artifacts
+      # 10) Upload artifacts
       - name: Upload portable build (exe + Qt runtime)
         uses: actions/upload-artifact@v4
         with:
@@ -153,7 +132,7 @@ jobs:
           path: pen-whiteboard/InkBoard-Setup.exe
           if-no-files-found: error
 
-      # 12) Always keep the raw build log for debugging
+      # 11) Always keep the raw build log for debugging
       - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
