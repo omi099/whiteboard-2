@@ -9127,3 +9127,36 @@ echo "Wrote laser_files.txt"
 echo "-------------------- BEGIN laser_files.txt --------------------"
 cat laser_files.txt
 echo "-------------------- END laser_files.txt --------------------"
+- name: Export laser source files and commit to repo
+  if: always()
+  shell: bash
+  run: |
+    # Merge the requested source files into laser_files.txt at the repo root.
+    cd "$GITHUB_WORKSPACE/pen-whiteboard"
+    {
+      for f in src/model/Item.h src/model/StrokeItem.h src/model/StrokeItem.cpp src/core/Serializer.cpp; do
+        echo "===================================================================="
+        if [ -f "$f" ]; then
+          echo "===== FILE: $f ====="
+          echo "===================================================================="
+          cat "$f"
+          echo
+        else
+          echo "===== MISSING: $f (not found) ====="
+          echo "===================================================================="
+        fi
+        echo
+      done
+    } > "$GITHUB_WORKSPACE/laser_files.txt"
+
+    # Commit it back to the repository.
+    cd "$GITHUB_WORKSPACE"
+    git config user.name  "github-actions[bot]"
+    git config user.email "github-actions[bot]@users.noreply.github.com"
+    git add -f laser_files.txt
+    if git diff --cached --quiet; then
+      echo "laser_files.txt unchanged — nothing to commit."
+    else
+      git commit -m "chore: export laser source files [skip ci]"
+      git push origin "HEAD:$ github.ref_name "
+    fi
