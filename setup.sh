@@ -14102,3 +14102,325 @@ void Canvas::updateCursor()
 EOF
 
 log "PART 15 complete: granular background engine (graph/isometric/music/log presets, major+minor grid, per-page colors/spacing, axes) with right-click canvas controls"
+
+
+# ---------------------------------------------------------------------------
+#  PART 16 : High-fidelity export.
+#            - Exporter background renderer now matches the full Part-15
+#              engine (Graph/Isometric/Music/Log + minor grid + axes +
+#              per-page colors), all vector & cosmetic-pen crisp.
+#            - PDF is page-size aware: each page's PDF sheet takes that page's
+#              own dimensions + orientation; finite pages render their exact
+#              sheet, infinite pages fit content onto A4. Backgrounds included.
+#            - PNG/SVG honor finite page sheets too.
+#            Overwrites src/core/Exporter.cpp only (Exporter.h unchanged).
+# ---------------------------------------------------------------------------
+log "PART 16: page-size-aware, background-included vector export (PDF/PNG/SVG)"
+
+cat > src/core/Exporter.cpp <<'EOF'
+#include "core/Exporter.h"
+
+#include "model/Document.h"
+#include "model/Page.h"
+
+#include <QPainter>
+#include <QImage>
+#include <QSize>
+#include <QSizeF>
+#include <QPen>
+#include <QTransform>
+#include <QSvgGenerator>
+#include <QPdfWriter>
+#include <QPageSize>
+#include <cmath>
+
+namespace ib {
+namespace io {
+
+static const double kPiExp = 3.14159265358979323846;
+
+// Full background engine, mirroring Canvas' Part-15 renderer but keyed off the
+// painter's device scale (there is no interactive zoom during export).
+static void drawBackgroundPattern(QPainter &p, const Page &pg, const QRectF &area)
+{
+    if (pg.background == BackgroundKind::Blank && !pg.showAxes)
+        return;
+
+    const double devScale = std::sqrt(std::abs(p.worldTransform().determinant()));
+    const auto visible = [devScale](double spacingScene) {
+        return spacingScene * devScale >= 2.0;
+    };
+
+    const double major = qMax(4.0, pg.gridSpacing);
+    const int divisions = qBound(1, pg.minorDivisions, 40);
+    const double minor = major / divisions;
+
+    const auto lineSet = [&](double spacing, const QColor &color, double penW,
+                             bool vertical, bool horizontal) {
+        if (!visible(spacing))
+            return;
+        QPen pen(color);
+        pen.setCosmetic(true);
+        pen.setWidthF(penW);
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        if (vertical) {
+            const double sx = std::floor(area.left() / spacing) * spacing;
+            for (double x = sx; x <= area.right(); x += spacing)
+                p.drawLine(QPointF(x, area.top()), QPointF(x, area.bottom()));
+        }
+        if (horizontal) {
+            const double sy = std::floor(area.top() / spacing) * spacing;
+            for (double y = sy; y <= area.bottom(); y += spacing)
+                p.drawLine(QPointF(area.left(), y), QPointF(area.right(), y));
+        }
+    };
+
+    switch (pg.background) {
+    case BackgroundKind::Blank:
+        break;
+    case BackgroundKind::Grid:
+        lineSet(major, pg.gridColor, 1.0, true, true);
+        break;
+    case BackgroundKind::Lines:
+        lineSet(major, pg.gridColor, 1.0, false, true);
+        break;
+    case BackgroundKind::Dots: {
+        if (visible(major)) {
+            p.setPen(Qt::NoPen);
+            p.setBrush(pg.gridColor);
+            const double sx = std::floor(area.left() / major) * major;
+            const double sy = std::floor(area.top() / major) * major;
+            for (double x = sx; x <= area.right(); x += major)
+                for (double y = sy; y <= area.bottom(); y += major)
+                    p.drawEllipse(QPointF(x, y), 1.3, 1.3);
+        }
+        break;
+    }
+    case BackgroundKind::Graph:
+        lineSet(minor, pg.minorColor, 1.0, true, true);
+        lineSet(major, pg.gridColor,  1.4, true, true);
+        break;
+    case BackgroundKind::Log: {
+        lineSet(major, pg.gridColor, 1.2, true, false);
+        if (visible(major)) {
+            QPen minorPen(pg.minorColor); minorPen.setCosmetic(true); minorPen.setWidthF(1.0);
+            QPen majorPen(pg.gridColor);  majorPen.setCosmetic(true); majorPen.setWidthF(1.2);
+            const double startDecade = std::floor(area.top() / major) * major;
+            for (double base = startDecade; base <= area.bottom() + major; base += major) {
+                for (int k = 1; k <= 10; ++k) {
+                    const double y = base + major * std::log10(static_cast<double>(k));
+                    if (y < area.top() || y > area.bottom())
+                        continue;
+                    p.setPen((k == 1 || k == 10) ? majorPen : minorPen);
+                    p.drawLine(QPointF(area.left(), y), QPointF(area.right(), y));
+                }
+            }
+        }
+        break;
+    }
+    case BackgroundKind::Isometric: {
+        if (visible(major)) {
+            QPen pen(pg.gridColor); pen.setCosmetic(true); pen.setWidthF(1.0);
+            p.setPen(pen);
+            const double sx = std::floor(area.left() / major) * major;
+            for (double x = sx; x <= area.right(); x += major)
+                p.drawLine(QPointF(x, area.top()), QPointF(x, area.bottom()));
+            const double slope = std::tan(30.0 * kPiExp / 180.0);
+            const double dy = major;
+            const double span = std::abs(slope) *
+                    (std::abs(area.left()) + std::abs(area.right())) + area.height();
+            const double cLo = std::floor((area.top() - span) / dy) * dy;
+            const double cHi = area.bottom() + span;
+            for (double c = cLo; c <= cHi; c += dy) {
+                p.drawLine(QPointF(area.left(),  slope * area.left()  + c),
+                           QPointF(area.right(), slope * area.right() + c));
+                p.drawLine(QPointF(area.left(), -slope * area.left()  + c),
+                           QPointF(area.right(),-slope * area.right() + c));
+            }
+        }
+        break;
+    }
+    case BackgroundKind::Music: {
+        const double lineGap = major / 4.0;
+        if (visible(lineGap)) {
+            QPen pen(pg.gridColor); pen.setCosmetic(true); pen.setWidthF(1.0);
+            p.setPen(pen);
+            const double staffHeight = lineGap * 4.0;
+            const double staffPeriod = staffHeight + lineGap * 3.0;
+            const double firstStaff = std::floor(area.top() / staffPeriod) * staffPeriod;
+            for (double top = firstStaff; top <= area.bottom(); top += staffPeriod) {
+                for (int i = 0; i < 5; ++i) {
+                    const double y = top + i * lineGap;
+                    if (y >= area.top() && y <= area.bottom())
+                        p.drawLine(QPointF(area.left(), y), QPointF(area.right(), y));
+                }
+            }
+        }
+        break;
+    }
+    }
+
+    if (pg.showAxes) {
+        QPen axisPen(pg.axisColor); axisPen.setCosmetic(true); axisPen.setWidthF(1.8);
+        p.setPen(axisPen);
+        if (0.0 >= area.top() && 0.0 <= area.bottom())
+            p.drawLine(QPointF(area.left(), 0.0), QPointF(area.right(), 0.0));
+        if (0.0 >= area.left() && 0.0 <= area.right())
+            p.drawLine(QPointF(0.0, area.top()), QPointF(0.0, area.bottom()));
+    }
+}
+
+// Logical bounds to export for a page: the exact sheet when finite, otherwise
+// the content bounds plus a margin.
+static QRectF exportBounds(const Page &pg)
+{
+    if (!pg.infinite)
+        return QRectF(0.0, 0.0, qMax(1.0, pg.pageWidth), qMax(1.0, pg.pageHeight));
+    QRectF b = pg.contentBounds();
+    if (b.isNull())
+        b = QRectF(0, 0, 1280, 720);
+    const double margin = 40.0;
+    b.adjust(-margin, -margin, margin, margin);
+    return b;
+}
+
+void renderPage(QPainter &p, const Page &pg, const QRectF &src,
+                const QRectF &dst, bool drawBackground)
+{
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setRenderHint(QPainter::TextAntialiasing, true);
+    p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+
+    p.setClipRect(dst);
+    p.translate(dst.topLeft());
+    const double sx = dst.width()  / (src.width()  <= 0 ? 1.0 : src.width());
+    const double sy = dst.height() / (src.height() <= 0 ? 1.0 : src.height());
+    p.scale(sx, sy);
+    p.translate(-src.topLeft());
+
+    if (drawBackground) {
+        p.fillRect(src, pg.bgColor);
+        drawBackgroundPattern(p, pg, src);
+    }
+
+    for (const auto &ly : pg.layers) {
+        if (!ly.visible)
+            continue;
+        p.save();
+        if (ly.opacity < 1.0)
+            p.setOpacity(ly.opacity);
+        for (const auto &it : ly.items)
+            it->paint(p);
+        p.restore();
+    }
+
+    p.restore();
+}
+
+bool exportPng(const Page &pg, const QString &path, double scale, QString *error)
+{
+    QRectF b = exportBounds(pg);
+
+    scale = qBound(0.1, scale, 8.0);
+    const QSize sz(qMax(1, static_cast<int>(b.width() * scale)),
+                   qMax(1, static_cast<int>(b.height() * scale)));
+
+    QImage img(sz, QImage::Format_ARGB32_Premultiplied);
+    img.fill(Qt::transparent);
+    {
+        QPainter p(&img);
+        renderPage(p, pg, b, QRectF(0, 0, sz.width(), sz.height()), true);
+    }
+    if (!img.save(path, "PNG")) {
+        if (error) *error = QStringLiteral("Failed to write PNG file.");
+        return false;
+    }
+    return true;
+}
+
+bool exportSvg(const Page &pg, const QString &path, QString *error)
+{
+    QRectF b = exportBounds(pg);
+
+    QSvgGenerator gen;
+    gen.setFileName(path);
+    gen.setSize(QSize(static_cast<int>(b.width()), static_cast<int>(b.height())));
+    gen.setViewBox(QRectF(0, 0, b.width(), b.height()));
+    gen.setTitle(QStringLiteral("InkBoard Page"));
+    gen.setDescription(QStringLiteral("Exported by InkBoard"));
+
+    {
+        QPainter p(&gen);
+        if (!p.isActive()) {
+            if (error) *error = QStringLiteral("Failed to create SVG file.");
+            return false;
+        }
+        renderPage(p, pg, b, QRectF(0, 0, b.width(), b.height()), true);
+    }
+    return true;
+}
+
+bool exportPdf(const Document &doc, const QString &path, QString *error)
+{
+    if (doc.pageCount() <= 0) {
+        if (error) *error = QStringLiteral("Nothing to export.");
+        return false;
+    }
+
+    QPdfWriter writer(path);
+    writer.setResolution(150);
+
+    // Per-page PDF sheet size + logical source rect.
+    const auto layoutFor = [](const Page &pg, QPageSize &size, QRectF &src) {
+        if (!pg.infinite) {
+            const double wpt = qMax(1.0, pg.pageWidth)  * 0.75; // 96 DPI px -> points
+            const double hpt = qMax(1.0, pg.pageHeight) * 0.75;
+            size = QPageSize(QSizeF(wpt, hpt), QPageSize::Point,
+                             QStringLiteral("InkBoardPage"), QPageSize::ExactMatch);
+            src  = QRectF(0.0, 0.0, qMax(1.0, pg.pageWidth), qMax(1.0, pg.pageHeight));
+        } else {
+            QRectF b = pg.contentBounds();
+            if (b.isNull())
+                b = QRectF(0, 0, 1280, 720);
+            b.adjust(-40, -40, 40, 40);
+            size = QPageSize(QPageSize::A4);
+            src  = b;
+        }
+    };
+
+    QPageSize firstSize;
+    QRectF firstSrc;
+    layoutFor(doc.page(0), firstSize, firstSrc);
+    writer.setPageSize(firstSize);
+
+    QPainter p(&writer);
+    if (!p.isActive()) {
+        if (error) *error = QStringLiteral("Failed to create PDF file.");
+        return false;
+    }
+
+    for (int i = 0; i < doc.pageCount(); ++i) {
+        QPageSize size;
+        QRectF src;
+        layoutFor(doc.page(i), size, src);
+        if (i > 0) {
+            writer.setPageSize(size);
+            writer.newPage();
+        }
+        const QRectF dst(0, 0, writer.width(), writer.height());
+        const double s = qMin(dst.width()  / (src.width()  <= 0 ? 1.0 : src.width()),
+                              dst.height() / (src.height() <= 0 ? 1.0 : src.height()));
+        QRectF fitted(0, 0, src.width() * s, src.height() * s);
+        fitted.moveCenter(dst.center());
+        renderPage(p, doc.page(i), src, fitted, true);
+    }
+    return true;
+}
+
+} // namespace io
+} // namespace ib
+EOF
+
+log "PART 16 complete: vector export is now page-size aware with full backgrounds (PDF per-page sheet size/orientation, PNG/SVG honor finite sheets)"
