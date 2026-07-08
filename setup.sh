@@ -10239,3 +10239,1328 @@ void Canvas::updateCursor()
 EOF
 
 log "PART 12 complete: permanent laser is now a real erasable/undoable/saveable glow stroke"
+
+# ---------------------------------------------------------------------------
+#  PART 13 : Unify laser as real ink in BOTH modes. Vanishing mode now fades
+#            and auto-removes real laser strokes when the pen leaves range,
+#            so laser is fully erasable / undoable / selectable in every mode.
+#            Overwrites StrokeItem.{h,cpp} and Canvas.{h,cpp}.
+# ---------------------------------------------------------------------------
+log "PART 13: vanish-mode laser is now real erasable ink that auto-removes on pen-leave"
+
+# ---------------------------------------------------------------------------
+#  src/model/StrokeItem.h  (overwrite: add 'laser' tag field)
+# ---------------------------------------------------------------------------
+cat > src/model/StrokeItem.h <<'EOF'
+#pragma once
+
+#include <QColor>
+#include <QVector>
+
+#include "model/Item.h"
+
+namespace ib {
+
+class StrokeItem : public Item {
+public:
+    QVector<StrokePoint> points;
+    QColor  color         = QColor(24, 24, 24);
+    double  baseWidth     = 3.0;
+    double  opacity       = 1.0;
+    bool    highlighter   = false;
+    bool    pressureWidth = true;
+
+    // Laser glow style (used by the Laser tool). When glow is true a
+    // translucent glowColor underlay is drawn beneath the core stroke.
+    bool    glow          = false;
+    QColor  glowColor     = QColor(255, 45, 40);
+    double  glowRadius    = 10.0;
+
+    // Marks a stroke created by the Laser tool. Used by the canvas to fade
+    // and auto-remove laser ink when the pen leaves range (vanishing mode).
+    bool    laser         = false;
+
+    ItemType type() const override { return ItemType::Stroke; }
+    QRectF boundingRect() const override;
+    void paint(QPainter &p) const override;
+    std::unique_ptr<Item> clone() const override;
+    void translate(const QPointF &delta) override;
+    void write(QJsonObject &obj) const override;
+    void read(const QJsonObject &obj) override;
+
+    void addPoint(const StrokePoint &pt) { points.push_back(pt); }
+    bool isEmpty() const { return points.isEmpty(); }
+};
+
+} // namespace ib
+EOF
+
+# ---------------------------------------------------------------------------
+#  src/model/StrokeItem.cpp  (overwrite: serialize 'laser'; glow unchanged)
+# ---------------------------------------------------------------------------
+cat > src/model/StrokeItem.cpp <<'EOF'
+#include "model/StrokeItem.h"
+
+#include <QPainter>
+#include <QPainterPath>
+#include <QJsonArray>
+#include <algorithm>
+
+namespace ib {
+
+static QJsonArray colorToJson(const QColor &c)
+{
+    QJsonArray a;
+    a.append(c.red());
+    a.append(c.green());
+    a.append(c.blue());
+    a.append(c.alpha());
+    return a;
+}
+
+static QColor colorFromJson(const QJsonValue &v, const QColor &def)
+{
+    const QJsonArray a = v.toArray();
+    if (a.size() < 3)
+        return def;
+    const int alpha = a.size() >= 4 ? a.at(3).toInt(255) : 255;
+    return QColor(a.at(0).toInt(), a.at(1).toInt(), a.at(2).toInt(), alpha);
+}
+
+QRectF StrokeItem::boundingRect() const
+{
+    if (points.isEmpty())
+        return QRectF();
+
+    double minX = points.first().x, maxX = minX;
+    double minY = points.first().y, maxY = minY;
+    for (const auto &pt : points) {
+        minX = std::min(minX, pt.x);
+        maxX = std::max(maxX, pt.x);
+        minY = std::min(minY, pt.y);
+        maxY = std::max(maxY, pt.y);
+    }
+    const double m = baseWidth * 0.5 + (glow ? glowRadius : 0.0) + 1.0;
+    return QRectF(QPointF(minX, minY), QPointF(maxX, maxY)).adjusted(-m, -m, m, m);
+}
+
+void StrokeItem::paint(QPainter &p) const
+{
+    if (points.isEmpty())
+        return;
+
+    p.save();
+
+    QColor c = color;
+    c.setAlphaF(c.alphaF() * qBound(0.0, opacity, 1.0));
+
+    // Glow underlay (laser pen), drawn beneath the core stroke.
+    if (glow && glowRadius > 0.0) {
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const double baseAlpha = qBound(0.0, opacity, 1.0);
+        const auto glowPass = [&](double extra, double a) {
+            QColor gc = glowColor;
+            gc.setAlphaF(a * baseAlpha);
+            QPen gp(gc);
+            gp.setWidthF(qMax(0.3, baseWidth + extra));
+            gp.setCapStyle(Qt::RoundCap);
+            gp.setJoinStyle(Qt::RoundJoin);
+            p.setPen(gp);
+            p.setBrush(Qt::NoBrush);
+            if (points.size() == 1) {
+                p.drawPoint(points.first().pos());
+            } else {
+                QPainterPath path(points.first().pos());
+                for (int i = 1; i < points.size(); ++i)
+                    path.lineTo(points[i].pos());
+                p.drawPath(path);
+            }
+        };
+        glowPass(2.0 * glowRadius, 0.30);
+        glowPass(glowRadius, 0.50);
+    }
+
+    if (points.size() == 1) {
+        const double pr = pressureWidth ? qMax(0.15, points.first().pressure) : 1.0;
+        const double w  = qMax(0.3, baseWidth * pr);
+        p.setPen(Qt::NoPen);
+        p.setBrush(c);
+        p.drawEllipse(points.first().pos(), w * 0.5, w * 0.5);
+        p.restore();
+        return;
+    }
+
+    QPen pen(c);
+    pen.setCapStyle(Qt::RoundCap);
+    pen.setJoinStyle(Qt::RoundJoin);
+
+    if (pressureWidth) {
+        for (int i = 1; i < points.size(); ++i) {
+            const double pr = 0.5 * (points[i - 1].pressure + points[i].pressure);
+            pen.setWidthF(qMax(0.3, baseWidth * pr));
+            p.setPen(pen);
+            p.drawLine(points[i - 1].pos(), points[i].pos());
+        }
+    } else {
+        pen.setWidthF(baseWidth);
+        p.setPen(pen);
+        QPainterPath path(points.first().pos());
+        for (int i = 1; i < points.size(); ++i)
+            path.lineTo(points[i].pos());
+        p.drawPath(path);
+    }
+
+    p.restore();
+}
+
+std::unique_ptr<Item> StrokeItem::clone() const
+{
+    return std::make_unique<StrokeItem>(*this);
+}
+
+void StrokeItem::translate(const QPointF &delta)
+{
+    for (auto &pt : points) {
+        pt.x += delta.x();
+        pt.y += delta.y();
+    }
+}
+
+void StrokeItem::write(QJsonObject &obj) const
+{
+    obj["type"]          = "stroke";
+    obj["color"]         = colorToJson(color);
+    obj["baseWidth"]     = baseWidth;
+    obj["opacity"]       = opacity;
+    obj["highlighter"]   = highlighter;
+    obj["pressureWidth"] = pressureWidth;
+
+    if (glow) {
+        obj["glow"]       = true;
+        obj["glowColor"]  = colorToJson(glowColor);
+        obj["glowRadius"] = glowRadius;
+    }
+    if (laser)
+        obj["laser"] = true;
+
+    QJsonArray pts;
+    for (const auto &pt : points) {
+        QJsonArray a;
+        a.append(pt.x);
+        a.append(pt.y);
+        a.append(pt.pressure);
+        pts.append(a);
+    }
+    obj["points"] = pts;
+}
+
+void StrokeItem::read(const QJsonObject &obj)
+{
+    color         = colorFromJson(obj.value("color"), QColor(24, 24, 24));
+    baseWidth     = obj.value("baseWidth").toDouble(3.0);
+    opacity       = obj.value("opacity").toDouble(1.0);
+    highlighter   = obj.value("highlighter").toBool(false);
+    pressureWidth = obj.value("pressureWidth").toBool(true);
+
+    glow          = obj.value("glow").toBool(false);
+    glowColor     = colorFromJson(obj.value("glowColor"), QColor(255, 45, 40));
+    glowRadius    = obj.value("glowRadius").toDouble(10.0);
+    laser         = obj.value("laser").toBool(false);
+
+    points.clear();
+    const QJsonArray pts = obj.value("points").toArray();
+    for (const auto &v : pts) {
+        const QJsonArray a = v.toArray();
+        if (a.size() >= 2) {
+            const double pr = a.size() >= 3 ? a.at(2).toDouble(1.0) : 1.0;
+            points.push_back(StrokePoint(a.at(0).toDouble(), a.at(1).toDouble(), pr));
+        }
+    }
+}
+
+} // namespace ib
+EOF
+
+# ---------------------------------------------------------------------------
+#  src/canvas/Canvas.h  (overwrite: fade machinery now targets real strokes)
+# ---------------------------------------------------------------------------
+cat > src/canvas/Canvas.h <<'EOF'
+#pragma once
+
+#include <QWidget>
+#include <QPointF>
+#include <QRectF>
+#include <QPoint>
+#include <QString>
+#include <QElapsedTimer>
+
+#include <memory>
+#include <vector>
+#include <cstddef>
+
+#include "model/Document.h"
+#include "model/StrokeItem.h"
+#include "model/ShapeItem.h"
+#include "canvas/Tools.h"
+
+class QTimer;
+class QPainter;
+class QPaintEvent;
+class QMouseEvent;
+class QTabletEvent;
+class QWheelEvent;
+class QKeyEvent;
+
+namespace ib {
+
+class Canvas : public QWidget {
+    Q_OBJECT
+public:
+    explicit Canvas(QWidget *parent = nullptr);
+
+    void setDocument(Document *doc);
+    Document *document() const { return m_doc; }
+
+    void setTool(ToolId t);
+    ToolId tool() const { return m_settings.tool; }
+
+    void setToolSettings(const ToolSettings &s) { m_settings = s; updateCursor(); update(); }
+    const ToolSettings &toolSettings() const { return m_settings; }
+
+    double scale() const { return m_scale; }
+
+signals:
+    void viewChanged();
+    void toolChanged(ib::ToolId tool);
+    void cursorMoved(QPointF scenePos);
+
+public slots:
+    void zoomIn();
+    void zoomOut();
+    void resetView();
+    void zoomToFit();
+    void deleteSelection();
+    void selectAll();
+    void clearSelection();
+    void clearLaser();
+    void refresh() { update(); }
+
+protected:
+    void paintEvent(QPaintEvent *) override;
+    void mousePressEvent(QMouseEvent *) override;
+    void mouseMoveEvent(QMouseEvent *) override;
+    void mouseReleaseEvent(QMouseEvent *) override;
+    void tabletEvent(QTabletEvent *) override;
+    void wheelEvent(QWheelEvent *) override;
+    void keyPressEvent(QKeyEvent *) override;
+    void keyReleaseEvent(QKeyEvent *) override;
+    void leaveEvent(QEvent *) override;
+    bool eventFilter(QObject *obj, QEvent *ev) override;
+
+private slots:
+    void onFadeTick();
+
+private:
+    enum class Action { Press, Move, Release };
+
+    struct EraseStash {
+        std::size_t index;
+        ItemPtr item;
+    };
+
+    QPointF widgetToScene(const QPointF &w) const {
+        return QPointF((w.x() - m_translate.x()) / m_scale,
+                       (w.y() - m_translate.y()) / m_scale);
+    }
+    void zoomAround(const QPointF &widgetPos, double factor);
+
+    void drawBackground(QPainter &p, const Page &pg, const QRectF &area);
+    void drawSelection(QPainter &p);
+    void drawBrushPreview(QPainter &p);
+
+    void handlePointer(Action a, const QPointF &widgetPos, double pressure,
+                       Qt::KeyboardModifiers mods, bool eraserTip);
+    void handleSelect(Action a, const QPointF &sp, Qt::KeyboardModifiers mods);
+
+    void setSelectionSingle(Item *it);
+    void addToSelection(Item *it);
+    void removeFromSelection(Item *it);
+    void selectInRect(const QRectF &r, bool add);
+    Item *topItemAt(const QPointF &sp);
+    bool hitTest(Item *it, const QPointF &sp, double radius) const;
+
+    void commitAdd(ItemPtr item, const QString &text);
+    void eraseAt(const QPointF &sp);
+    void finishErase();
+    void addTextAt(const QPointF &sp);
+    void cancelActive();
+    void updateCursor();
+
+    // laser vanishing (operates on real laser strokes)
+    bool hasLaserInk();
+    void startVanish();
+    void stopVanish();
+    void removeLaserInk(const QString &text);
+
+    Document *m_doc = nullptr;
+    ToolSettings m_settings;
+
+    double m_scale = 1.0;
+    QPointF m_translate;
+
+    bool m_drawing = false;
+    bool m_erasing = false;
+    bool m_panning = false;
+    bool m_spaceDown = false;
+    QPoint m_lastPanPos;
+
+    std::unique_ptr<StrokeItem> m_activeStroke;
+    std::unique_ptr<ShapeItem> m_activeShape;
+
+    std::vector<Item *> m_selection;
+    bool m_movingSelection = false;
+    QPointF m_moveStartScene;
+    QPointF m_moveAccum;
+
+    bool m_rubber = false;
+    QPointF m_rubberStartScene;
+    QRectF m_rubberRect;
+
+    std::vector<EraseStash> m_eraseStash;
+
+    // laser fade state (fades committed laser strokes, then removes them)
+    QTimer *m_fadeTimer = nullptr;
+    QElapsedTimer m_fadeClock;
+    bool m_fading = false;
+    double m_laserFadeAlpha = 1.0;
+
+    QPointF m_cursorWidget;
+    bool m_hoverValid = false;
+};
+
+} // namespace ib
+EOF
+
+# ---------------------------------------------------------------------------
+#  src/canvas/Canvas.cpp  (overwrite: laser = real ink in both modes)
+# ---------------------------------------------------------------------------
+cat > src/canvas/Canvas.cpp <<'EOF'
+#include "canvas/Canvas.h"
+
+#include "core/Commands.h"
+#include "model/TextItem.h"
+#include "model/ImageItem.h"
+
+#include <QApplication>
+#include <QTimer>
+#include <QPainter>
+#include <QPen>
+#include <QRadialGradient>
+#include <QMouseEvent>
+#include <QTabletEvent>
+#include <QWheelEvent>
+#include <QKeyEvent>
+#include <QPointingDevice>
+#include <QInputDialog>
+#include <QUndoStack>
+#include <QLineF>
+#include <algorithm>
+#include <cmath>
+
+namespace ib {
+
+static const double kPi = 3.14159265358979323846;
+
+static double distToSegment(const QPointF &p, const QPointF &a, const QPointF &b)
+{
+    const QPointF ab = b - a;
+    const double len2 = ab.x() * ab.x() + ab.y() * ab.y();
+    if (len2 <= 1e-9)
+        return std::hypot(p.x() - a.x(), p.y() - a.y());
+    double t = ((p.x() - a.x()) * ab.x() + (p.y() - a.y()) * ab.y()) / len2;
+    t = std::max(0.0, std::min(1.0, t));
+    const QPointF proj(a.x() + t * ab.x(), a.y() + t * ab.y());
+    return std::hypot(p.x() - proj.x(), p.y() - proj.y());
+}
+
+static QPointF constrainShape(const QPointF &a, const QPointF &b, ShapeKind kind)
+{
+    const QPointF d = b - a;
+    if (kind == ShapeKind::Line) {
+        double ang = std::atan2(d.y(), d.x());
+        const double step = kPi / 4.0;
+        ang = std::round(ang / step) * step;
+        const double len = std::hypot(d.x(), d.y());
+        return a + QPointF(std::cos(ang) * len, std::sin(ang) * len);
+    }
+    const double s = std::max(std::abs(d.x()), std::abs(d.y()));
+    return a + QPointF(d.x() < 0 ? -s : s, d.y() < 0 ? -s : s);
+}
+
+Canvas::Canvas(QWidget *parent)
+    : QWidget(parent)
+{
+    setFocusPolicy(Qt::StrongFocus);
+    setMouseTracking(true);
+    setAttribute(Qt::WA_TabletTracking, true);
+    setAutoFillBackground(false);
+    m_translate = QPointF(40, 40);
+
+    // Tablet proximity events go to the application object, so we watch them
+    // via an app-level filter to drive laser vanishing mode.
+    qApp->installEventFilter(this);
+
+    m_fadeTimer = new QTimer(this);
+    m_fadeTimer->setInterval(16);
+    connect(m_fadeTimer, &QTimer::timeout, this, &Canvas::onFadeTick);
+
+    updateCursor();
+}
+
+void Canvas::setDocument(Document *doc)
+{
+    if (m_doc == doc)
+        return;
+    if (m_doc) {
+        m_doc->disconnect(this);
+        if (m_doc->undoStack())
+            m_doc->undoStack()->disconnect(this);
+    }
+    m_doc = doc;
+    cancelActive();
+    m_selection.clear();
+
+    if (m_doc) {
+        connect(m_doc, &Document::currentPageChanged, this, [this](int) {
+            cancelActive(); m_selection.clear(); stopVanish(); update();
+        });
+        connect(m_doc, &Document::pagesChanged, this, [this]() {
+            cancelActive(); m_selection.clear(); stopVanish(); update();
+        });
+        connect(m_doc, &Document::contentChanged, this, [this]() { update(); });
+        if (m_doc->undoStack()) {
+            connect(m_doc->undoStack(), &QUndoStack::indexChanged, this, [this](int) {
+                m_selection.clear(); cancelActive(); update();
+            });
+        }
+    }
+    update();
+}
+
+void Canvas::setTool(ToolId t)
+{
+    cancelActive();
+    m_settings.tool = t;
+    updateCursor();
+    emit toolChanged(t);
+    update();
+}
+
+// ---- laser ink helpers -----------------------------------------------------
+bool Canvas::hasLaserInk()
+{
+    if (!m_doc)
+        return false;
+    for (const auto &it : m_doc->current().active().items)
+        if (it->type() == ItemType::Stroke &&
+            static_cast<StrokeItem *>(it.get())->laser)
+            return true;
+    return false;
+}
+
+void Canvas::removeLaserInk(const QString &text)
+{
+    if (!m_doc)
+        return;
+    Layer &ly = m_doc->current().active();
+    std::vector<Item *> targets;
+    for (auto &it : ly.items)
+        if (it->type() == ItemType::Stroke &&
+            static_cast<StrokeItem *>(it.get())->laser)
+            targets.push_back(it.get());
+    if (targets.empty())
+        return;
+    for (Item *t : targets)
+        removeFromSelection(t);
+    m_doc->undoStack()->push(new RemoveItemsCommand(
+        m_doc, m_doc->currentIndex(), m_doc->current().activeLayer,
+        std::move(targets), text));
+}
+
+void Canvas::clearLaser()
+{
+    stopVanish();
+    removeLaserInk(QStringLiteral("Clear laser"));
+    update();
+}
+
+// ---- laser vanishing (fades real strokes, then removes them) ---------------
+void Canvas::startVanish()
+{
+    if (!hasLaserInk())
+        return;
+    m_fading = true;
+    m_laserFadeAlpha = 1.0;
+    m_fadeClock.restart();
+    if (!m_fadeTimer->isActive())
+        m_fadeTimer->start();
+    update();
+}
+
+void Canvas::stopVanish()
+{
+    m_fading = false;
+    m_laserFadeAlpha = 1.0;
+    if (m_fadeTimer->isActive())
+        m_fadeTimer->stop();
+    update();
+}
+
+void Canvas::onFadeTick()
+{
+    if (!m_fading) {
+        m_fadeTimer->stop();
+        return;
+    }
+    const qint64 el  = m_fadeClock.elapsed();
+    const int delay  = qMax(0, m_settings.laser.vanishDelayMs);
+    const int dur    = qMax(1, m_settings.laser.fadeDurationMs);
+
+    if (el <= delay) {
+        m_laserFadeAlpha = 1.0;
+        update();
+        return;
+    }
+    const double t = static_cast<double>(el - delay) / static_cast<double>(dur);
+    if (t >= 1.0) {
+        m_fading = false;
+        m_laserFadeAlpha = 1.0;
+        m_fadeTimer->stop();
+        removeLaserInk(QStringLiteral("Laser vanished"));
+        update();
+        return;
+    }
+    m_laserFadeAlpha = 1.0 - t;
+    update();
+}
+
+bool Canvas::eventFilter(QObject *obj, QEvent *ev)
+{
+    if (ev->type() == QEvent::TabletLeaveProximity) {
+        if (m_settings.tool == ToolId::Laser && m_settings.laser.vanishMode &&
+            !m_drawing)
+            startVanish();
+    } else if (ev->type() == QEvent::TabletEnterProximity) {
+        if (m_fading)
+            stopVanish();
+    }
+    return QWidget::eventFilter(obj, ev);
+}
+
+// ---- view ------------------------------------------------------------------
+void Canvas::zoomAround(const QPointF &widgetPos, double factor)
+{
+    const QPointF before = widgetToScene(widgetPos);
+    m_scale = qBound(0.05, m_scale * factor, 40.0);
+    m_translate = widgetPos - before * m_scale;
+    update();
+    emit viewChanged();
+}
+
+void Canvas::zoomIn()  { zoomAround(QPointF(width() / 2.0, height() / 2.0), 1.2); }
+void Canvas::zoomOut() { zoomAround(QPointF(width() / 2.0, height() / 2.0), 1.0 / 1.2); }
+
+void Canvas::resetView()
+{
+    m_scale = 1.0;
+    m_translate = QPointF(40, 40);
+    update();
+    emit viewChanged();
+}
+
+void Canvas::zoomToFit()
+{
+    if (!m_doc) { update(); return; }
+    QRectF b = m_doc->current().contentBounds();
+    if (b.isNull()) { resetView(); return; }
+    b.adjust(-40, -40, 40, 40);
+    const double sx = width()  / b.width();
+    const double sy = height() / b.height();
+    m_scale = qBound(0.05, qMin(sx, sy), 40.0);
+    m_translate = QPointF(width() / 2.0, height() / 2.0) - b.center() * m_scale;
+    update();
+    emit viewChanged();
+}
+
+// ---- painting --------------------------------------------------------------
+void Canvas::drawBackground(QPainter &p, const Page &pg, const QRectF &area)
+{
+    if (pg.background == BackgroundKind::Blank)
+        return;
+    const double s = qMax(4.0, pg.gridSpacing);
+    QPen pen(pg.gridColor);
+    pen.setCosmetic(true);
+    pen.setWidth(1);
+    p.setPen(pen);
+
+    const double startX = std::floor(area.left() / s) * s;
+    const double startY = std::floor(area.top() / s) * s;
+
+    if (pg.background == BackgroundKind::Grid) {
+        for (double x = startX; x <= area.right(); x += s)
+            p.drawLine(QPointF(x, area.top()), QPointF(x, area.bottom()));
+        for (double y = startY; y <= area.bottom(); y += s)
+            p.drawLine(QPointF(area.left(), y), QPointF(area.right(), y));
+    } else if (pg.background == BackgroundKind::Lines) {
+        for (double y = startY; y <= area.bottom(); y += s)
+            p.drawLine(QPointF(area.left(), y), QPointF(area.right(), y));
+    } else {
+        p.setPen(Qt::NoPen);
+        p.setBrush(pg.gridColor);
+        for (double x = startX; x <= area.right(); x += s)
+            for (double y = startY; y <= area.bottom(); y += s)
+                p.drawEllipse(QPointF(x, y), 1.3, 1.3);
+    }
+}
+
+void Canvas::drawSelection(QPainter &p)
+{
+    if (m_selection.empty())
+        return;
+    QPen pen(QColor(60, 120, 220));
+    pen.setCosmetic(true);
+    pen.setStyle(Qt::DashLine);
+    pen.setWidth(1);
+    p.setPen(pen);
+    p.setBrush(Qt::NoBrush);
+    for (Item *it : m_selection)
+        p.drawRect(it->boundingRect());
+}
+
+void Canvas::drawBrushPreview(QPainter &p)
+{
+    if (!m_hoverValid || m_panning)
+        return;
+
+    if (m_settings.tool == ToolId::Eraser) {
+        const double r = m_settings.eraserRadius * m_scale;
+        QPen pen(QColor(70, 70, 70));
+        pen.setStyle(Qt::DashLine);
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        p.drawEllipse(m_cursorWidget, r, r);
+        return;
+    }
+
+    QColor col;
+    double w = 0.0;
+    bool laser = false;
+    switch (m_settings.tool) {
+    case ToolId::Pen:         col = m_settings.penColor;   w = m_settings.penWidth;   break;
+    case ToolId::Highlighter: col = m_settings.hlColor;    w = m_settings.hlWidth;    break;
+    case ToolId::Line:
+    case ToolId::Rectangle:
+    case ToolId::Ellipse:     col = m_settings.shapeColor; w = m_settings.shapeWidth; break;
+    case ToolId::Laser:       col = m_settings.laser.coreColor; w = m_settings.laser.width; laser = true; break;
+    default: return;
+    }
+
+    const double r = qMax(1.5, w * 0.5 * m_scale);
+
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    if (laser && m_settings.laser.glowEnabled) {
+        const double gr = r + m_settings.laser.glowRadius * m_scale;
+        QRadialGradient g(m_cursorWidget, gr);
+        QColor g0 = m_settings.laser.glowColor; g0.setAlphaF(0.55 * m_settings.laser.intensity);
+        QColor g1 = m_settings.laser.glowColor; g1.setAlphaF(0.0);
+        g.setColorAt(0.0, g0);
+        g.setColorAt(1.0, g1);
+        p.setPen(Qt::NoPen);
+        p.setBrush(g);
+        p.drawEllipse(m_cursorWidget, gr, gr);
+    }
+
+    QColor fill = col;
+    fill.setAlphaF(laser ? m_settings.laser.intensity : 0.9);
+    const QColor outline = (col.lightness() > 128) ? QColor(0, 0, 0, 170)
+                                                   : QColor(255, 255, 255, 190);
+    QPen pen(outline);
+    pen.setWidthF(1.0);
+    p.setPen(pen);
+    p.setBrush(fill);
+    p.drawEllipse(m_cursorWidget, r, r);
+    p.restore();
+}
+
+void Canvas::paintEvent(QPaintEvent *)
+{
+    QPainter p(this);
+    p.fillRect(rect(), QColor(90, 93, 99));
+    if (!m_doc)
+        return;
+
+    p.save();
+    p.translate(m_translate);
+    p.scale(m_scale, m_scale);
+
+    const QRectF sceneRect =
+        QRectF(widgetToScene(QPointF(0, 0)),
+               widgetToScene(QPointF(width(), height()))).normalized();
+
+    Page &pg = m_doc->current();
+    p.fillRect(sceneRect, pg.bgColor);
+    drawBackground(p, pg, sceneRect);
+
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setRenderHint(QPainter::TextAntialiasing, true);
+
+    for (const auto &ly : pg.layers) {
+        if (!ly.visible)
+            continue;
+        const double layerOp = (ly.opacity < 1.0) ? ly.opacity : 1.0;
+        for (const auto &it : ly.items) {
+            double op = layerOp;
+            if (m_fading && it->type() == ItemType::Stroke &&
+                static_cast<const StrokeItem *>(it.get())->laser)
+                op *= m_laserFadeAlpha;
+            if (op < 1.0) {
+                p.save();
+                p.setOpacity(op);
+                it->paint(p);
+                p.restore();
+            } else {
+                it->paint(p);
+            }
+        }
+    }
+
+    if (m_activeStroke) m_activeStroke->paint(p);
+    if (m_activeShape)  m_activeShape->paint(p);
+
+    drawSelection(p);
+
+    if (m_rubber) {
+        QPen pen(QColor(60, 120, 220));
+        pen.setCosmetic(true);
+        pen.setStyle(Qt::DashLine);
+        p.setPen(pen);
+        p.setBrush(QColor(60, 120, 220, 40));
+        p.drawRect(m_rubberRect);
+    }
+
+    p.restore();
+
+    drawBrushPreview(p);
+}
+
+// ---- input -----------------------------------------------------------------
+void Canvas::mousePressEvent(QMouseEvent *e)
+{
+    m_cursorWidget = e->position();
+    m_hoverValid = true;
+    if (e->button() == Qt::MiddleButton ||
+        (m_spaceDown && e->button() == Qt::LeftButton)) {
+        m_panning = true;
+        m_lastPanPos = e->position().toPoint();
+        setCursor(Qt::ClosedHandCursor);
+        return;
+    }
+    if (e->button() == Qt::LeftButton)
+        handlePointer(Action::Press, e->position(), 1.0, e->modifiers(), false);
+}
+
+void Canvas::mouseMoveEvent(QMouseEvent *e)
+{
+    m_cursorWidget = e->position();
+    m_hoverValid = true;
+    if (m_panning) {
+        const QPoint d = e->position().toPoint() - m_lastPanPos;
+        m_lastPanPos = e->position().toPoint();
+        m_translate += QPointF(d);
+        update();
+        emit viewChanged();
+        return;
+    }
+    handlePointer(Action::Move, e->position(), 1.0, e->modifiers(), false);
+    update();
+    emit cursorMoved(widgetToScene(e->position()));
+}
+
+void Canvas::mouseReleaseEvent(QMouseEvent *e)
+{
+    m_cursorWidget = e->position();
+    if (m_panning &&
+        (e->button() == Qt::MiddleButton || e->button() == Qt::LeftButton)) {
+        m_panning = false;
+        updateCursor();
+        return;
+    }
+    if (e->button() == Qt::LeftButton)
+        handlePointer(Action::Release, e->position(), 1.0, e->modifiers(), false);
+}
+
+void Canvas::tabletEvent(QTabletEvent *e)
+{
+    const bool eraserTip =
+        e->pointerType() == QPointingDevice::PointerType::Eraser;
+    double pr = e->pressure();
+    if (pr <= 0.0)
+        pr = 1.0;
+    m_cursorWidget = e->position();
+    m_hoverValid = true;
+
+    switch (e->type()) {
+    case QEvent::TabletPress:
+        handlePointer(Action::Press, e->position(), pr, e->modifiers(), eraserTip);
+        break;
+    case QEvent::TabletMove:
+        handlePointer(Action::Move, e->position(), pr, e->modifiers(), eraserTip);
+        emit cursorMoved(widgetToScene(e->position()));
+        update();
+        break;
+    case QEvent::TabletRelease:
+        handlePointer(Action::Release, e->position(), pr, e->modifiers(), eraserTip);
+        break;
+    default:
+        break;
+    }
+    e->accept();
+}
+
+void Canvas::wheelEvent(QWheelEvent *e)
+{
+    const double factor = std::pow(1.0015, e->angleDelta().y());
+    zoomAround(e->position(), factor);
+    e->accept();
+}
+
+void Canvas::keyPressEvent(QKeyEvent *e)
+{
+    if (e->key() == Qt::Key_Space) {
+        m_spaceDown = true;
+        setCursor(Qt::OpenHandCursor);
+        e->accept();
+        return;
+    }
+    if (e->key() == Qt::Key_Delete || e->key() == Qt::Key_Backspace) {
+        deleteSelection();
+        e->accept();
+        return;
+    }
+    if (e->key() == Qt::Key_Escape) {
+        cancelActive();
+        clearSelection();
+        stopVanish();
+        e->accept();
+        return;
+    }
+    QWidget::keyPressEvent(e);
+}
+
+void Canvas::keyReleaseEvent(QKeyEvent *e)
+{
+    if (e->key() == Qt::Key_Space) {
+        m_spaceDown = false;
+        updateCursor();
+        e->accept();
+        return;
+    }
+    QWidget::keyReleaseEvent(e);
+}
+
+void Canvas::leaveEvent(QEvent *e)
+{
+    m_hoverValid = false;
+    update();
+    QWidget::leaveEvent(e);
+}
+
+// ---- pointer dispatch ------------------------------------------------------
+void Canvas::handlePointer(Action a, const QPointF &widgetPos, double pressure,
+                           Qt::KeyboardModifiers mods, bool eraserTip)
+{
+    if (!m_doc)
+        return;
+    const QPointF sp = widgetToScene(widgetPos);
+    m_cursorWidget = widgetPos;
+
+    const ToolId t = eraserTip ? ToolId::Eraser : m_settings.tool;
+
+    // Laser: a real glow stroke on the active layer in BOTH modes, so it is
+    // fully erasable / undoable / selectable / saveable like the pen. In
+    // vanishing mode it also auto-removes when the pen leaves range.
+    if (t == ToolId::Laser) {
+        Layer &lly = m_doc->current().active();
+        if (lly.locked)
+            return;
+        if (a == Action::Press) {
+            stopVanish();
+            m_drawing = true;
+            m_activeStroke = std::make_unique<StrokeItem>();
+            m_activeStroke->highlighter   = false;
+            m_activeStroke->pressureWidth = false;
+            m_activeStroke->color         = m_settings.laser.coreColor;
+            m_activeStroke->baseWidth     = m_settings.laser.width;
+            m_activeStroke->opacity       = qBound(0.0, m_settings.laser.intensity, 1.0);
+            m_activeStroke->glow          = m_settings.laser.glowEnabled;
+            m_activeStroke->glowColor     = m_settings.laser.glowColor;
+            m_activeStroke->glowRadius    = m_settings.laser.glowRadius;
+            m_activeStroke->laser         = true;
+            m_activeStroke->addPoint(StrokePoint(sp.x(), sp.y(), pressure));
+            update();
+        } else if (a == Action::Move && m_drawing && m_activeStroke) {
+            m_activeStroke->addPoint(StrokePoint(sp.x(), sp.y(), pressure));
+            update();
+        } else if (a == Action::Release && m_drawing) {
+            if (m_activeStroke && !m_activeStroke->isEmpty())
+                commitAdd(std::move(m_activeStroke), QStringLiteral("Laser"));
+            m_activeStroke.reset();
+            m_drawing = false;
+            update();
+        }
+        return;
+    }
+
+    Layer &ly = m_doc->current().active();
+    if (ly.locked)
+        return;
+
+    switch (t) {
+    case ToolId::Pen:
+    case ToolId::Highlighter: {
+        const bool hl = (t == ToolId::Highlighter);
+        if (a == Action::Press) {
+            m_drawing = true;
+            m_activeStroke = std::make_unique<StrokeItem>();
+            m_activeStroke->highlighter   = hl;
+            m_activeStroke->color         = hl ? m_settings.hlColor : m_settings.penColor;
+            m_activeStroke->baseWidth     = hl ? m_settings.hlWidth : m_settings.penWidth;
+            m_activeStroke->opacity       = hl ? m_settings.hlOpacity : 1.0;
+            m_activeStroke->pressureWidth = hl ? false : m_settings.penPressure;
+            m_activeStroke->addPoint(StrokePoint(sp.x(), sp.y(), pressure));
+            update();
+        } else if (a == Action::Move && m_drawing && m_activeStroke) {
+            m_activeStroke->addPoint(StrokePoint(sp.x(), sp.y(), pressure));
+            update();
+        } else if (a == Action::Release && m_drawing) {
+            if (m_activeStroke && !m_activeStroke->isEmpty())
+                commitAdd(std::move(m_activeStroke),
+                          hl ? QStringLiteral("Highlight") : QStringLiteral("Draw"));
+            m_activeStroke.reset();
+            m_drawing = false;
+            update();
+        }
+        break;
+    }
+    case ToolId::Eraser: {
+        if (a == Action::Press) { m_erasing = true; m_eraseStash.clear(); eraseAt(sp); update(); }
+        else if (a == Action::Move && m_erasing) { eraseAt(sp); update(); }
+        else if (a == Action::Release && m_erasing) { finishErase(); m_erasing = false; update(); }
+        break;
+    }
+    case ToolId::Line:
+    case ToolId::Rectangle:
+    case ToolId::Ellipse: {
+        if (a == Action::Press) {
+            m_activeShape = std::make_unique<ShapeItem>();
+            m_activeShape->kind = (t == ToolId::Line) ? ShapeKind::Line
+                                : (t == ToolId::Rectangle) ? ShapeKind::Rectangle
+                                : ShapeKind::Ellipse;
+            m_activeShape->color  = m_settings.shapeColor;
+            m_activeShape->width  = m_settings.shapeWidth;
+            m_activeShape->filled = m_settings.shapeFilled;
+            m_activeShape->fill   = m_settings.shapeFill;
+            m_activeShape->p1 = sp;
+            m_activeShape->p2 = sp;
+            m_drawing = true;
+            update();
+        } else if (a == Action::Move && m_drawing && m_activeShape) {
+            m_activeShape->p2 = (mods & Qt::ShiftModifier)
+                ? constrainShape(m_activeShape->p1, sp, m_activeShape->kind)
+                : sp;
+            update();
+        } else if (a == Action::Release && m_drawing) {
+            if (m_activeShape) {
+                const QLineF diag(m_activeShape->p1, m_activeShape->p2);
+                if (diag.length() >= 2.0)
+                    commitAdd(std::move(m_activeShape), QStringLiteral("Shape"));
+            }
+            m_activeShape.reset();
+            m_drawing = false;
+            update();
+        }
+        break;
+    }
+    case ToolId::Text: {
+        if (a == Action::Press)
+            addTextAt(sp);
+        break;
+    }
+    case ToolId::Select: {
+        handleSelect(a, sp, mods);
+        break;
+    }
+    case ToolId::Laser:
+        break;
+    }
+}
+
+// ---- selection -------------------------------------------------------------
+void Canvas::handleSelect(Action a, const QPointF &sp, Qt::KeyboardModifiers mods)
+{
+    if (a == Action::Press) {
+        Item *hit = topItemAt(sp);
+        if (hit) {
+            const bool already =
+                std::find(m_selection.begin(), m_selection.end(), hit) != m_selection.end();
+            if (mods & Qt::ShiftModifier) {
+                if (already) removeFromSelection(hit);
+                else addToSelection(hit);
+            } else if (!already) {
+                setSelectionSingle(hit);
+            }
+            m_movingSelection = true;
+            m_moveStartScene = sp;
+            m_moveAccum = QPointF(0, 0);
+        } else {
+            if (!(mods & Qt::ShiftModifier))
+                clearSelection();
+            m_rubber = true;
+            m_rubberStartScene = sp;
+            m_rubberRect = QRectF(sp, sp);
+        }
+        update();
+    } else if (a == Action::Move) {
+        if (m_movingSelection && !m_selection.empty()) {
+            const QPointF d = sp - m_moveStartScene;
+            const QPointF step = d - m_moveAccum;
+            for (Item *it : m_selection)
+                it->translate(step);
+            m_moveAccum = d;
+            update();
+        } else if (m_rubber) {
+            m_rubberRect = QRectF(m_rubberStartScene, sp).normalized();
+            update();
+        }
+    } else {
+        if (m_movingSelection) {
+            m_movingSelection = false;
+            if (!m_selection.empty() &&
+                (qAbs(m_moveAccum.x()) > 0.01 || qAbs(m_moveAccum.y()) > 0.01)) {
+                for (Item *it : m_selection)
+                    it->translate(-m_moveAccum);
+                std::vector<Item *> targets(m_selection.begin(), m_selection.end());
+                m_doc->undoStack()->push(new TranslateItemsCommand(
+                    m_doc, m_doc->currentIndex(), m_doc->current().activeLayer,
+                    targets, m_moveAccum, QStringLiteral("Move")));
+            }
+            m_moveAccum = QPointF(0, 0);
+        } else if (m_rubber) {
+            m_rubber = false;
+            selectInRect(m_rubberRect, (mods & Qt::ShiftModifier));
+        }
+        update();
+    }
+}
+
+void Canvas::setSelectionSingle(Item *it)
+{
+    m_selection.clear();
+    if (it) m_selection.push_back(it);
+}
+
+void Canvas::addToSelection(Item *it)
+{
+    if (it && std::find(m_selection.begin(), m_selection.end(), it) == m_selection.end())
+        m_selection.push_back(it);
+}
+
+void Canvas::removeFromSelection(Item *it)
+{
+    m_selection.erase(std::remove(m_selection.begin(), m_selection.end(), it),
+                      m_selection.end());
+}
+
+void Canvas::clearSelection()
+{
+    if (m_selection.empty())
+        return;
+    m_selection.clear();
+    update();
+}
+
+void Canvas::selectAll()
+{
+    if (!m_doc)
+        return;
+    m_selection.clear();
+    for (auto &it : m_doc->current().active().items)
+        m_selection.push_back(it.get());
+    update();
+}
+
+void Canvas::selectInRect(const QRectF &r, bool add)
+{
+    if (!m_doc)
+        return;
+    if (!add)
+        m_selection.clear();
+    for (auto &it : m_doc->current().active().items) {
+        if (r.intersects(it->boundingRect()) &&
+            std::find(m_selection.begin(), m_selection.end(), it.get()) == m_selection.end())
+            m_selection.push_back(it.get());
+    }
+}
+
+Item *Canvas::topItemAt(const QPointF &sp)
+{
+    if (!m_doc)
+        return nullptr;
+    Layer &ly = m_doc->current().active();
+    const double r = 6.0 / qMax(0.0001, m_scale);
+    for (int i = static_cast<int>(ly.items.size()) - 1; i >= 0; --i) {
+        Item *it = ly.items[static_cast<std::size_t>(i)].get();
+        if (hitTest(it, sp, r))
+            return it;
+    }
+    return nullptr;
+}
+
+bool Canvas::hitTest(Item *it, const QPointF &sp, double radius) const
+{
+    const QRectF bb = it->boundingRect().adjusted(-radius, -radius, radius, radius);
+    if (!bb.contains(sp))
+        return false;
+
+    if (it->type() == ItemType::Stroke) {
+        const StrokeItem *s = static_cast<const StrokeItem *>(it);
+        const double tol = radius + s->baseWidth * 0.5;
+        if (s->points.size() == 1)
+            return QLineF(sp, s->points.first().pos()).length() <= tol;
+        for (int i = 1; i < s->points.size(); ++i)
+            if (distToSegment(sp, s->points[i - 1].pos(), s->points[i].pos()) <= tol)
+                return true;
+        return false;
+    }
+    return true;
+}
+
+// ---- helpers ---------------------------------------------------------------
+void Canvas::commitAdd(ItemPtr item, const QString &text)
+{
+    if (!m_doc || !item)
+        return;
+    m_doc->undoStack()->push(new AddItemCommand(
+        m_doc, m_doc->currentIndex(), m_doc->current().activeLayer,
+        std::move(item), text));
+}
+
+void Canvas::eraseAt(const QPointF &sp)
+{
+    if (!m_doc)
+        return;
+    Layer &ly = m_doc->current().active();
+    const double r = m_settings.eraserRadius;
+    for (std::size_t i = 0; i < ly.items.size();) {
+        if (hitTest(ly.items[i].get(), sp, r)) {
+            m_eraseStash.push_back({i, std::move(ly.items[i])});
+            ly.items.erase(ly.items.begin() + static_cast<std::ptrdiff_t>(i));
+        } else {
+            ++i;
+        }
+    }
+}
+
+void Canvas::finishErase()
+{
+    if (!m_doc || m_eraseStash.empty())
+        return;
+    Layer &ly = m_doc->current().active();
+    std::sort(m_eraseStash.begin(), m_eraseStash.end(),
+              [](const EraseStash &a, const EraseStash &b) { return a.index < b.index; });
+
+    std::vector<Item *> targets;
+    for (auto &s : m_eraseStash) {
+        Item *raw = s.item.get();
+        targets.push_back(raw);
+        const std::size_t idx = std::min(s.index, ly.items.size());
+        ly.items.insert(ly.items.begin() + static_cast<std::ptrdiff_t>(idx),
+                        std::move(s.item));
+    }
+    m_eraseStash.clear();
+
+    m_doc->undoStack()->push(new RemoveItemsCommand(
+        m_doc, m_doc->currentIndex(), m_doc->current().activeLayer,
+        std::move(targets), QStringLiteral("Erase")));
+}
+
+void Canvas::addTextAt(const QPointF &sp)
+{
+    bool ok = false;
+    const QString text = QInputDialog::getMultiLineText(
+        this, tr("Add Text"), tr("Text:"), QString(), &ok);
+    if (!ok || text.trimmed().isEmpty())
+        return;
+    auto t = std::make_unique<TextItem>();
+    t->pos   = sp;
+    t->text  = text;
+    t->color = m_settings.textColor;
+    t->font  = m_settings.textFont;
+    commitAdd(std::move(t), QStringLiteral("Text"));
+}
+
+void Canvas::deleteSelection()
+{
+    if (!m_doc || m_selection.empty())
+        return;
+    std::vector<Item *> targets(m_selection.begin(), m_selection.end());
+    m_selection.clear();
+    m_doc->undoStack()->push(new RemoveItemsCommand(
+        m_doc, m_doc->currentIndex(), m_doc->current().activeLayer,
+        std::move(targets), QStringLiteral("Delete")));
+    update();
+}
+
+void Canvas::cancelActive()
+{
+    m_activeStroke.reset();
+    m_activeShape.reset();
+    m_drawing = false;
+    if (m_erasing && m_doc) {
+        Layer &ly = m_doc->current().active();
+        for (auto &s : m_eraseStash)
+            ly.items.push_back(std::move(s.item));
+    }
+    m_eraseStash.clear();
+    m_erasing = false;
+    m_movingSelection = false;
+    m_rubber = false;
+}
+
+void Canvas::updateCursor()
+{
+    switch (m_settings.tool) {
+    case ToolId::Pen:
+    case ToolId::Highlighter:
+    case ToolId::Line:
+    case ToolId::Rectangle:
+    case ToolId::Ellipse:
+    case ToolId::Laser:
+    case ToolId::Select:
+        setCursor(Qt::ArrowCursor);
+        break;
+    case ToolId::Eraser:
+        setCursor(Qt::BlankCursor);
+        break;
+    case ToolId::Text:
+        setCursor(Qt::IBeamCursor);
+        break;
+    }
+}
+
+} // namespace ib
+EOF
+
+log "PART 13 complete: laser is real erasable ink in both modes; vanishing mode fades then auto-removes it on pen-leave"
